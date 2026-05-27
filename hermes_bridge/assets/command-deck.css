@@ -221,7 +221,7 @@ h1 {
   gap: 14px;
   min-height: 0;
 }
-.heroPanel, .terminal, .teamPanel, .boardPanel, .activityPanel, .sidePanel, .composer, .metrics {
+.heroPanel, .terminal, .teamPanel, .boardPanel, .queuePanel, .activityPanel, .sidePanel, .composer, .metrics {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
@@ -400,13 +400,26 @@ h1 {
   border-bottom: 1px solid var(--line);
   background: rgba(255,255,255,.035);
 }
-.teamPanel, .boardPanel, .activityPanel, .terminal {
+.teamPanel, .boardPanel, .queuePanel, .activityPanel, .terminal {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
 }
-.teamPanel, .boardPanel, .activityPanel { grid-column: 1 / -1; display: none; }
+.teamPanel, .boardPanel, .queuePanel, .activityPanel { grid-column: 1 / -1; display: none; }
 .terminal { grid-column: 1 / -1; }
+.panelActions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.panelActions button, .compactTop button {
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 850;
+}
 .agentGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -493,9 +506,11 @@ h1 {
   background: var(--violet);
 }
 .lane-queued h3 span:first-child::before { background: var(--amber); }
+.lane-pending h3 span:first-child::before { background: var(--amber); }
 .lane-running h3 span:first-child::before { background: var(--cyan); box-shadow: 0 0 12px rgba(98,215,255,.36); }
 .lane-completed h3 span:first-child::before { background: var(--green); }
 .lane-error h3 span:first-child::before { background: var(--red); }
+.lane-failed h3 span:first-child::before { background: var(--red); }
 .laneHelp {
   color: var(--muted);
   font-size: 11px;
@@ -521,7 +536,8 @@ h1 {
 }
 .taskCard.running { border-left-color: var(--cyan); }
 .taskCard.completed { border-left-color: var(--green); }
-.taskCard.error, .taskCard.cancel_requested { border-left-color: var(--red); }
+.taskCard.pending { border-left-color: var(--amber); }
+.taskCard.failed, .taskCard.error, .taskCard.cancel_requested { border-left-color: var(--red); }
 .taskCard .id { color: var(--muted); font-family: Consolas, ui-monospace, monospace; }
 .taskCard .title { color: var(--text); line-height: 1.35; }
 .emptyLane {
@@ -532,6 +548,151 @@ h1 {
   border-radius: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.queueWorkspace {
+  display: grid;
+  grid-template-columns: minmax(280px, .48fr) minmax(420px, .92fr) minmax(360px, .72fr);
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+}
+.queueCreate, .queueBoard, .queueDetail {
+  display: grid;
+  min-height: 0;
+  border: 1px solid rgba(148,163,184,.14);
+  border-radius: 8px;
+  background: rgba(255,255,255,.025);
+  overflow: hidden;
+}
+.queueCreate {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.compactTop {
+  min-height: 44px;
+  padding: 9px 10px;
+}
+.queueCreate textarea {
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgba(3,6,11,.56);
+}
+.queueCreateActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.queueCreateActions span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.queueCreateActions button {
+  min-height: 34px;
+  padding: 0 13px;
+  font-weight: 900;
+  background: rgba(98, 215, 255, .12);
+}
+.queueLanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(190px, 1fr));
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+.queueLane {
+  min-height: 230px;
+}
+.queueTaskCard .meta {
+  overflow-wrap: anywhere;
+}
+.queueDetail {
+  overflow: auto;
+}
+.queueDetailBody {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+.queueDetailHead {
+  display: grid;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 32%, var(--line));
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255,255,255,.038);
+}
+.queueDetailHead h2 {
+  font-size: 19px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.queueDetailHead p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.queueMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.queueSection {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255,255,255,.032);
+}
+.queueSection h3 {
+  color: var(--cyan);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.queueField {
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid rgba(148,163,184,.12);
+  padding-top: 8px;
+}
+.queueField strong, .queueHistoryItem strong {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.queueField pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--soft);
+  font: 12px/1.45 Consolas, ui-monospace, monospace;
+}
+.queueDiff pre {
+  max-height: 320px;
+}
+.queueHistoryItem {
+  display: grid;
+  gap: 4px;
+  border-left: 2px solid var(--cyan);
+  padding: 2px 0 8px 10px;
+}
+.queueHistoryItem span, .queueEmptyText {
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 #transcript, .activity {
@@ -742,11 +903,13 @@ textarea:focus {
   animation: sweep 2.6s linear infinite;
 }
 
-.view-command [data-pane="team"], .view-command [data-pane="board"], .view-command [data-pane="log"] { display: none; }
-.view-team .heroPanel, .view-team .metrics, .view-team .terminal, .view-team .boardPanel, .view-team .activityPanel { display: none; }
+.view-command [data-pane="team"], .view-command [data-pane="board"], .view-command [data-pane="queue"], .view-command [data-pane="log"] { display: none; }
+.view-team .heroPanel, .view-team .metrics, .view-team .terminal, .view-team .boardPanel, .view-team .queuePanel, .view-team .activityPanel { display: none; }
 .view-team .teamPanel { display: grid; }
-.view-board .heroPanel, .view-board .metrics, .view-board .terminal, .view-board .teamPanel, .view-board .activityPanel { display: none; }
+.view-board .heroPanel, .view-board .metrics, .view-board .terminal, .view-board .teamPanel, .view-board .queuePanel, .view-board .activityPanel { display: none; }
 .view-board .boardPanel { display: grid; }
+.view-queue .heroPanel, .view-queue .metrics, .view-queue .terminal, .view-queue .teamPanel, .view-queue .boardPanel, .view-queue .activityPanel { display: none; }
+.view-queue .queuePanel { display: grid; }
 .view-log .workspace { display: none; }
 .view-log { grid-template-columns: 132px minmax(0, 1fr); }
 .view-log .inspector { grid-template-rows: minmax(0, 1fr); padding: 20px; }
@@ -776,7 +939,7 @@ textarea:focus {
   }
   .brand { min-height: 58px; grid-template-columns: auto; }
   .brand img { width: 44px; height: 44px; }
-  .navList { grid-template-columns: repeat(5, minmax(56px, 1fr)); gap: 8px; }
+  .navList { grid-template-columns: repeat(6, minmax(48px, 1fr)); gap: 8px; }
   .railStatus { display: none; }
   .workspace { height: auto; padding: 14px; }
   .topbar { flex-direction: column; }
@@ -788,6 +951,9 @@ textarea:focus {
   .crewSignals { grid-template-columns: 1fr; }
   .metric:nth-child(2) { border-right: 0; }
   .lanes { grid-template-columns: repeat(4, 210px); }
+  .queueWorkspace { grid-template-columns: 1fr; overflow: auto; }
+  .queueLanes { grid-template-columns: repeat(4, 210px); }
+  .queueDetail { min-height: 460px; }
   .composer { grid-template-columns: 1fr; }
   #send { min-height: 48px; }
   .view-log .inspector { height: calc(100vh - 74px); padding: 14px; }

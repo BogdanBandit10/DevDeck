@@ -10,6 +10,14 @@ const form = document.querySelector("#form");
 const input = document.querySelector("#input");
 const send = document.querySelector("#send");
 const lanes = document.querySelector("#lanes");
+const queueLanes = document.querySelector("#queueLanes");
+const queueDetail = document.querySelector("#queueDetail");
+const queueCount = document.querySelector("#queueCount");
+const queueRefresh = document.querySelector("#queueRefresh");
+const queueCreateForm = document.querySelector("#queueCreateForm");
+const queuePacketInput = document.querySelector("#queuePacketInput");
+const queueCreateStatus = document.querySelector("#queueCreateStatus");
+const queueTemplate = document.querySelector("#queueTemplate");
 const activityEl = document.querySelector("#activity");
 const agentGrid = document.querySelector("#agentGrid");
 const readyChip = document.querySelector("#readyChip");
@@ -36,6 +44,9 @@ const seen = new Set();
 let selectedTaskId = null;
 let selectedAgentId = null;
 let selectedTask = null;
+let selectedQueueTaskId = null;
+let queueTasks = [];
+let queueBusy = false;
 let dots = [];
 
 const laneDefs = [
@@ -49,7 +60,24 @@ const modeCopy = {
   command: ["Shared channel", "Terminal-style chat shared by the widget, backend, and crew coding agents."],
   team: ["Crew roster", "See which crew member is online, what they handle, and where current work is landing."],
   board: ["Kanban board", "Track background coding work by state so long tasks do not disappear."],
+  queue: ["Task queue", "Create manual task packets and inspect durable queue status, packets, results, and errors."],
   log: ["Activity log", "Raw bridge activity from the widget, Dev Deck, control commands, and agent replies."]
+};
+
+const queueStatuses = [
+  ["pending", "Pending", "Ready for a human executor."],
+  ["running", "Running", "Claimed or in manual execution."],
+  ["completed", "Completed", "Finished with a result."],
+  ["failed", "Failed", "Stopped with an error or restart recovery."]
+];
+
+const packetTemplate = {
+  TASK: "One concise objective.",
+  FILES: ["Exact file or folder path"],
+  ACTIONS: ["Read the named files.", "Perform the requested work.", "Report the result."],
+  RESTRICTIONS: ["Do not modify source unless explicitly allowed.", "Do not touch Dev Deck.exe.", "Stop if instructions are ambiguous."],
+  "OUTPUT FORMAT": ["Files read:", "Commands run:", "Files changed:", "Diff or summary:", "Errors/unverified:"],
+  "STOP CONDITIONS": ["Stop if required files are missing.", "Stop if the task needs broader scope."]
 };
 
 function short(text, n = 170) {
@@ -239,6 +267,211 @@ function renderBoard(tasks) {
   taskCount.textContent = `${(tasks || []).length} tasks`;
 }
 
+function queueTaskTitle(task, length = 120) {
+  return short(task?.packet?.TASK || task?.task_id || "Queued task", length);
+}
+
+function formatQueueList(value) {
+  if (Array.isArray(value)) return value.length ? value.join("\n") : "";
+  return String(value || "");
+}
+
+function appendQueueField(parent, label, value, className = "") {
+  const field = document.createElement("section");
+  field.className = `queueField ${className}`.trim();
+  const title = document.createElement("strong");
+  const body = document.createElement("pre");
+  title.textContent = label;
+  body.textContent = formatQueueList(value) || "None";
+  field.append(title, body);
+  parent.append(field);
+}
+
+function renderQueueDetails(task) {
+  if (!queueDetail) return;
+  if (!task) {
+    queueDetail.replaceChildren(Object.assign(document.createElement("div"), {
+      className: "emptyLane",
+      textContent: "Select a queue task"
+    }));
+    return;
+  }
+  const packet = task.packet || {};
+  const result = task.result || {};
+  const wrap = document.createElement("div");
+  wrap.className = "queueDetailBody";
+
+  const head = document.createElement("div");
+  head.className = "queueDetailHead";
+  const title = document.createElement("h2");
+  const meta = document.createElement("p");
+  title.textContent = queueTaskTitle(task, 160);
+  meta.textContent = `${task.task_id || "task"} / ${task.status || "unknown"} / updated ${task.updated_at || "unknown"}`;
+  head.append(title, meta);
+
+  const statusRow = document.createElement("div");
+  statusRow.className = "queueMetaGrid";
+  [
+    ["Status", task.status],
+    ["Source", task.source],
+    ["Claimed by", task.claimed_by || "None"],
+    ["Created", task.created_at],
+    ["Started", task.started_at || "Not started"],
+    ["Completed", task.completed_at || "Not completed"]
+  ].forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "fact";
+    const strong = document.createElement("strong");
+    const span = document.createElement("span");
+    strong.textContent = label;
+    span.textContent = String(value || "Unknown");
+    item.append(strong, span);
+    statusRow.append(item);
+  });
+
+  const packetBlock = document.createElement("section");
+  packetBlock.className = "queueSection";
+  const packetTitle = document.createElement("h3");
+  packetTitle.textContent = "Packet";
+  packetBlock.append(packetTitle);
+  appendQueueField(packetBlock, "TASK", packet.TASK);
+  appendQueueField(packetBlock, "FILES", packet.FILES);
+  appendQueueField(packetBlock, "ACTIONS", packet.ACTIONS);
+  appendQueueField(packetBlock, "RESTRICTIONS", packet.RESTRICTIONS);
+  appendQueueField(packetBlock, "OUTPUT FORMAT", packet["OUTPUT FORMAT"]);
+  appendQueueField(packetBlock, "STOP CONDITIONS", packet["STOP CONDITIONS"]);
+
+  const resultBlock = document.createElement("section");
+  resultBlock.className = "queueSection";
+  const resultTitle = document.createElement("h3");
+  resultTitle.textContent = "Result and error";
+  resultBlock.append(resultTitle);
+  appendQueueField(resultBlock, "Summary", result.summary);
+  appendQueueField(resultBlock, "Files read", result.files_read);
+  appendQueueField(resultBlock, "Commands run", result.commands_run);
+  appendQueueField(resultBlock, "Files changed", result.files_changed);
+  appendQueueField(resultBlock, "Diff", result.diff, "queueDiff");
+  appendQueueField(resultBlock, "Errors", task.error || result.errors);
+  appendQueueField(resultBlock, "Unverified", result.unverified);
+
+  const historyBlock = document.createElement("section");
+  historyBlock.className = "queueSection";
+  const historyTitle = document.createElement("h3");
+  historyTitle.textContent = "History";
+  historyBlock.append(historyTitle);
+  const history = Array.isArray(task.execution_history) ? task.execution_history : task.events || [];
+  if (!history.length) {
+    const empty = document.createElement("p");
+    empty.className = "queueEmptyText";
+    empty.textContent = "No history recorded.";
+    historyBlock.append(empty);
+  } else {
+    history.slice().reverse().forEach(event => {
+      const row = document.createElement("div");
+      row.className = "queueHistoryItem";
+      const strong = document.createElement("strong");
+      const body = document.createElement("span");
+      strong.textContent = `${event.type || "event"} / ${event.at || ""}`;
+      body.textContent = event.message || "";
+      row.append(strong, body);
+      historyBlock.append(row);
+    });
+  }
+
+  wrap.append(head, statusRow, packetBlock, resultBlock, historyBlock);
+  queueDetail.replaceChildren(wrap);
+}
+
+function renderQueueDashboard(tasks = queueTasks) {
+  if (!queueLanes) return;
+  const selected = tasks.find(task => task.task_id === selectedQueueTaskId) || null;
+  if (!selected && selectedQueueTaskId) selectedQueueTaskId = null;
+  queueLanes.replaceChildren(...queueStatuses.map(([status, label, help]) => {
+    const filtered = tasks.filter(task => task.status === status);
+    const lane = document.createElement("section");
+    lane.className = `lane queueLane lane-${status}`;
+    const head = document.createElement("h3");
+    const headLabel = document.createElement("span");
+    const headCount = document.createElement("span");
+    headLabel.textContent = label;
+    headCount.textContent = String(filtered.length);
+    head.append(headLabel, headCount);
+    const helper = document.createElement("p");
+    helper.className = "laneHelp";
+    helper.textContent = help;
+    const list = document.createElement("div");
+    list.className = "laneList";
+    if (!filtered.length) {
+      list.append(Object.assign(document.createElement("div"), {
+        className: "emptyLane",
+        textContent: "No items"
+      }));
+    }
+    filtered.forEach(task => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = `taskCard queueTaskCard ${task.status || ""}`;
+      card.classList.toggle("isSelected", selectedQueueTaskId === task.task_id);
+      card.setAttribute("aria-pressed", selectedQueueTaskId === task.task_id ? "true" : "false");
+      const id = document.createElement("span");
+      const title = document.createElement("span");
+      const meta = document.createElement("span");
+      id.className = "id";
+      title.className = "title";
+      meta.className = "meta";
+      id.textContent = task.task_id || "task";
+      title.textContent = queueTaskTitle(task);
+      meta.textContent = `${task.claimed_by || "unclaimed"} / ${task.updated_at || task.created_at || ""}`;
+      card.append(id, title, meta);
+      card.addEventListener("click", async () => {
+        selectedQueueTaskId = task.task_id || null;
+        await loadQueueTask(selectedQueueTaskId);
+      });
+      list.append(card);
+    });
+    lane.append(head, helper, list);
+    return lane;
+  }));
+  queueCount.textContent = `${tasks.length} tasks`;
+  renderQueueDetails(selected);
+}
+
+async function loadQueueTasks() {
+  if (!queueLanes || queueBusy) return;
+  queueBusy = true;
+  if (queueRefresh) queueRefresh.disabled = true;
+  try {
+    const res = await fetch("/task-queue/tasks?limit=100", { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || data.message || "Could not load queue");
+    queueTasks = Array.isArray(data.tasks) ? data.tasks : [];
+    renderQueueDashboard(queueTasks);
+  } catch (error) {
+    if (queueCreateStatus) queueCreateStatus.textContent = error.message;
+  } finally {
+    queueBusy = false;
+    if (queueRefresh) queueRefresh.disabled = false;
+  }
+}
+
+async function loadQueueTask(taskId) {
+  if (!taskId) {
+    renderQueueDetails(null);
+    return;
+  }
+  try {
+    const res = await fetch(`/task-queue/tasks/${encodeURIComponent(taskId)}`, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || data.message || "Could not load task");
+    const task = data.task || null;
+    queueTasks = queueTasks.map(item => item.task_id === taskId ? task : item);
+    renderQueueDashboard(queueTasks);
+    renderQueueDetails(task);
+  } catch (error) {
+    if (queueCreateStatus) queueCreateStatus.textContent = error.message;
+  }
+}
+
 function renderActivity(items) {
   const recent = (items || []).slice(-26).reverse();
   activityEl.replaceChildren(...recent.map(item => {
@@ -305,6 +538,7 @@ function setView(view) {
   app.classList.toggle("view-command", view === "command");
   app.classList.toggle("view-team", view === "team");
   app.classList.toggle("view-board", view === "board");
+  app.classList.toggle("view-queue", view === "queue");
   app.classList.toggle("view-log", view === "log");
   const copy = modeCopy[view] || modeCopy.command;
   modeTitle.textContent = copy[0];
@@ -316,6 +550,9 @@ function setView(view) {
   if (view === "command") {
     transcript.scrollTop = transcript.scrollHeight;
     input.focus();
+  }
+  if (view === "queue") {
+    loadQueueTasks();
   }
 }
 
@@ -461,6 +698,50 @@ document.querySelectorAll("[data-tab]").forEach(button => {
   button.addEventListener("click", () => setView(button.dataset.tab || "command"));
 });
 
+if (queuePacketInput) {
+  queuePacketInput.value = JSON.stringify(packetTemplate, null, 2);
+}
+
+if (queueTemplate) {
+  queueTemplate.addEventListener("click", () => {
+    queuePacketInput.value = JSON.stringify(packetTemplate, null, 2);
+    queuePacketInput.focus();
+  });
+}
+
+if (queueRefresh) {
+  queueRefresh.addEventListener("click", () => loadQueueTasks());
+}
+
+if (queueCreateForm) {
+  queueCreateForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!queuePacketInput || !queueCreateStatus) return;
+    let packet;
+    try {
+      packet = JSON.parse(queuePacketInput.value);
+    } catch (error) {
+      queueCreateStatus.textContent = `Invalid JSON: ${error.message}`;
+      return;
+    }
+    queueCreateStatus.textContent = "Creating task...";
+    try {
+      const res = await fetch("/task-queue/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(packet)
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || data.message || "Could not create task");
+      selectedQueueTaskId = data.task_id || data.task?.task_id || null;
+      queueCreateStatus.textContent = selectedQueueTaskId ? `Created ${selectedQueueTaskId}` : "Task created";
+      await loadQueueTasks();
+    } catch (error) {
+      queueCreateStatus.textContent = error.message;
+    }
+  });
+}
+
 copyStatus.addEventListener("click", async () => {
   let command = "";
   if (selectedTask?.task_id) {
@@ -493,7 +774,8 @@ document.addEventListener("keydown", event => {
   if (event.key === "1") setView("command");
   if (event.key === "2") setView("team");
   if (event.key === "3") setView("board");
-  if (event.key === "4") setView("log");
+  if (event.key === "4") setView("queue");
+  if (event.key === "5") setView("log");
   if (event.key === "/") {
     event.preventDefault();
     input.focus();

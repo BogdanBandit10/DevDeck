@@ -31,8 +31,9 @@
         <button class="navButton isActive" type="button" data-tab="command"><span>01</span><strong>Channel</strong></button>
         <button class="navButton" type="button" data-tab="team"><span>02</span><strong>Crew</strong></button>
         <button class="navButton" type="button" data-tab="board"><span>03</span><strong>Kanban</strong></button>
-        <button class="navButton" type="button" data-tab="log"><span>04</span><strong>Activity</strong></button>
-        <button class="navButton" type="button" id="exitButton" style="color: #ff5555;"><span>05</span><strong>Exit</strong></button>
+        <button class="navButton" type="button" data-tab="queue"><span>04</span><strong>Queue</strong></button>
+        <button class="navButton" type="button" data-tab="log"><span>05</span><strong>Activity</strong></button>
+        <button class="navButton" type="button" id="exitButton" style="color: #ff5555;"><span>06</span><strong>Exit</strong></button>
       </div>
       <div class="railStatus">
         <span id="railBackend">__BACKEND__</span>
@@ -95,6 +96,35 @@
         <section class="boardPanel" data-pane="board">
           <div class="panelTop"><strong>Kanban board</strong><span id="taskCount" class="chip">0 tasks</span></div>
           <div class="lanes" id="lanes"></div>
+        </section>
+
+        <section class="queuePanel" data-pane="queue">
+          <div class="panelTop">
+            <strong>Task queue</strong>
+            <div class="panelActions">
+              <span id="queueCount" class="chip">0 tasks</span>
+              <button type="button" id="queueRefresh">Refresh</button>
+            </div>
+          </div>
+          <div class="queueWorkspace">
+            <form class="queueCreate" id="queueCreateForm">
+              <div class="panelTop compactTop">
+                <strong>New packet</strong>
+                <button type="button" id="queueTemplate">Template</button>
+              </div>
+              <textarea id="queuePacketInput" rows="16" spellcheck="false" aria-label="Task packet JSON"></textarea>
+              <div class="queueCreateActions">
+                <span id="queueCreateStatus">Paste packet JSON and create a pending task.</span>
+                <button type="submit">Create</button>
+              </div>
+            </form>
+            <section class="queueBoard" aria-label="Durable task queue">
+              <div class="queueLanes" id="queueLanes"></div>
+            </section>
+            <section class="queueDetail" id="queueDetail" aria-label="Task details">
+              <div class="emptyLane">Select a queue task</div>
+            </section>
+          </div>
         </section>
 
         <section class="terminal" data-pane="command">
