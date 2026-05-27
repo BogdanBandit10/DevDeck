@@ -46,6 +46,12 @@ from assistant_protocol import (
     presets_payload,
     strip_async_prefix,
 )
+from task_queue import (
+    DurableTaskQueue,
+    TaskQueueError,
+    TaskQueueNotFoundError,
+    TaskQueueValidationError,
+)
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
@@ -1199,6 +1205,81 @@ def cancel_assistant_task(task_id: str, request_id: str) -> dict[str, Any]:
     return enrich_response(f"Cancel requested for {task_id}.", metadata, request_id=request_id, task=task)
 
 
+def queue_response(task: dict[str, Any] | None = None, *, tasks: list[dict[str, Any]] | None = None, request_id: str = "", queue_errors: list[str] | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "success": True,
+        "ok": True,
+        "request_id": request_id,
+    }
+    if task is not None:
+        body["task"] = task
+        body["task_id"] = task.get("task_id")
+        body["status"] = task.get("status")
+    if tasks is not None:
+        body["tasks"] = tasks
+        body["count"] = len(tasks)
+    if queue_errors:
+        body["queue_errors"] = queue_errors
+    return body
+
+
+def queue_error_response(exc: Exception, request_id: str) -> tuple[dict[str, Any], int]:
+    status = getattr(exc, "status_code", 500)
+    body = make_response(str(exc), ok=False, error=str(exc), request_id=request_id)
+    body["status"] = "error"
+    return body, int(status)
+
+
+def require_task_queue() -> DurableTaskQueue:
+    if BridgeState.task_queue is None:
+        raise RuntimeError("Durable task queue is not initialized")
+    return BridgeState.task_queue
+
+
+def task_queue_list_response(query: dict[str, list[str]], request_id: str) -> dict[str, Any]:
+    queue_obj = require_task_queue()
+    status = (query.get("status") or [""])[0] or None
+    raw_limit = (query.get("limit") or ["50"])[0]
+    try:
+        limit = int(raw_limit)
+    except ValueError as exc:
+        raise TaskQueueValidationError("limit must be an integer") from exc
+    items = queue_obj.list(status=status, limit=limit)
+    return queue_response(tasks=items, request_id=request_id, queue_errors=queue_obj.queue_errors)
+
+
+def task_queue_get_response(task_id: str, request_id: str) -> dict[str, Any]:
+    queue_obj = require_task_queue()
+    task = queue_obj.get(task_id)
+    if not task:
+        raise TaskQueueNotFoundError(f"No task found with id {task_id}")
+    return queue_response(task=task, request_id=request_id)
+
+
+def task_queue_create_response(payload: dict[str, Any], request_id: str) -> dict[str, Any]:
+    queue_obj = require_task_queue()
+    task = queue_obj.create(payload, source="bridge")
+    record_activity("task_queue", f"Queued durable task {task['task_id']}.", source="bridge", status="pending", request_id=request_id, task_id=task["task_id"])
+    return queue_response(task=task, request_id=request_id)
+
+
+def task_queue_status_response(task_id: str, action: str, payload: dict[str, Any], request_id: str) -> dict[str, Any]:
+    queue_obj = require_task_queue()
+    if action == "running":
+        task = queue_obj.mark_running(task_id)
+    elif action == "complete":
+        result = payload.get("result") if isinstance(payload, dict) else None
+        task = queue_obj.mark_completed(task_id, result if isinstance(result, dict) else payload)
+    elif action == "fail":
+        result = payload.get("result") if isinstance(payload, dict) else None
+        error = str(payload.get("error") or payload.get("message") or "Task failed.") if isinstance(payload, dict) else "Task failed."
+        task = queue_obj.mark_failed(task_id, error=error, result=result if isinstance(result, dict) else None)
+    else:
+        raise TaskQueueValidationError(f"Unknown task queue action: {action}")
+    record_activity("task_queue", f"Durable task {task_id} marked {task['status']}.", source="bridge", status=task["status"], request_id=request_id, task_id=task_id)
+    return queue_response(task=task, request_id=request_id)
+
+
 class HermesPersistentRuntime:
     """In-process Hermes Agent runtimes, initialized lazily per specialized persona."""
 
@@ -1545,6 +1626,7 @@ class BridgeState:
     cfg: dict[str, Any] = {}
     runtime: HermesPersistentRuntime | CodexCliRuntime | None = None
     tasks: TaskRegistry | None = None
+    task_queue: DurableTaskQueue | None = None
     activity: list[dict[str, Any]] = []
     activity_lock = threading.RLock()
     chatter_tasks: set[str] = set()
@@ -1617,7 +1699,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/") or "/"
+        request_id = f"{int(time.time() * 1000)}_{threading.get_ident()}"
         if path.startswith("/assets/"):
             self._send_asset(path[len("/assets/"):])
             return
@@ -1654,6 +1738,24 @@ class Handler(BaseHTTPRequestHandler):
             body.update(capabilities_payload())
             self._send_json(body)
             return
+        if path == "/task-queue/tasks":
+            try:
+                self._send_json(task_queue_list_response(parse_qs(parsed_url.query), request_id))
+            except Exception as exc:
+                append_log("bridge.log", f"{request_id} task queue list error: {exc}")
+                body, status = queue_error_response(exc, request_id)
+                self._send_json(body, status)
+            return
+        if path.startswith("/task-queue/tasks/"):
+            try:
+                parts = path.split("/")
+                task_id = parts[3] if len(parts) > 3 else ""
+                self._send_json(task_queue_get_response(task_id, request_id))
+            except Exception as exc:
+                append_log("bridge.log", f"{request_id} task queue get error: {exc}")
+                body, status = queue_error_response(exc, request_id)
+                self._send_json(body, status)
+            return
         if path in {"/assistant/tasks", "/tasks"}:
             self._send_json(assistant_status_response(f"{int(time.time() * 1000)}_{threading.get_ident()}"))
             return
@@ -1670,6 +1772,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload, raw = self._read_body()
             append_log("requests.log", f"{request_id} {path} raw={raw[:4000]!r}")
+            if path == "/task-queue/tasks":
+                self._send_json(task_queue_create_response(payload if isinstance(payload, dict) else {}, request_id))
+                return
+            if path.startswith("/task-queue/tasks/"):
+                parts = path.split("/")
+                task_id = parts[3] if len(parts) > 3 else ""
+                action = parts[4] if len(parts) > 4 else ""
+                if action not in {"running", "complete", "fail"}:
+                    self._send_json(make_response("not found", ok=False, error=f"unknown path: {path}", request_id=request_id), 404)
+                    return
+                self._send_json(task_queue_status_response(task_id, action, payload if isinstance(payload, dict) else {}, request_id))
+                return
             if path in {"/shutdown", "/control/shutdown"}:
                 BridgeState.shutting_down = True
                 self._send_json(make_response("shutting down", request_id=request_id))
@@ -1762,6 +1876,10 @@ class Handler(BaseHTTPRequestHandler):
             response = runtime.chat(strip_async_prefix(message), request_id, agent_name=metadata.get("agent_name", "Hermes"))
             record_activity("agent", response, source="agent", status="completed", request_id=request_id, intent=metadata.get("intent") or metadata.get("mode"))
             self._send_json(enrich_response(response, metadata, request_id=request_id))
+        except TaskQueueError as exc:
+            append_log("bridge.log", f"{request_id} task queue error: {exc}")
+            body, status = queue_error_response(exc, request_id)
+            self._send_json(body, status)
         except Exception as exc:
             append_log("bridge.log", f"{request_id} error: {exc}\n{traceback.format_exc()}")
             write_status(busy=False, last_error=str(exc))
@@ -1779,6 +1897,9 @@ def run_server(cfg: dict[str, Any]) -> int:
     BridgeState.started_at = time.time()
     append_log("bridge.log", f"Starting widget bridge mode={mode}")
     BridgeState.tasks = TaskRegistry()
+    BridgeState.task_queue = DurableTaskQueue(ROOT / "task_queue")
+    if BridgeState.task_queue.queue_errors:
+        append_log("bridge.log", "Task queue recovery warnings: " + "; ".join(BridgeState.task_queue.queue_errors[-5:]))
     if mode in {"codex", "codex_cli", "base_codex", "base-codex"}:
         BridgeState.runtime = CodexCliRuntime(cfg)
     else:
