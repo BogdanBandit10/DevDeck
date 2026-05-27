@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>Dev Deck</title>
+  <link rel="stylesheet" href="/assets/command-deck.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+  <script>
+    window.COMMAND_DECK = {
+      endpoint: decodeURIComponent("__ENDPOINT__"),
+      stateEndpoint: decodeURIComponent("__STATE_ENDPOINT__"),
+      backend: __BACKEND_JSON__,
+      port: __PORT__,
+      workspace: __WORKSPACE_JSON__
+    };
+  </script>
+</head>
+<body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+  <main class="shell view-command" id="app">
+    <nav class="rail" aria-label="Dev Deck navigation">
+      <button class="brand navHome" type="button" data-tab="command" title="Shared channel">
+        <img src="/assets/dev-deck-logo.svg" alt="" />
+        <span>Dev Deck</span>
+      </button>
+      <div class="navList">
+        <button class="navButton isActive" type="button" data-tab="command"><span>01</span><strong>Channel</strong></button>
+        <button class="navButton" type="button" data-tab="team"><span>02</span><strong>Crew</strong></button>
+        <button class="navButton" type="button" data-tab="board"><span>03</span><strong>Kanban</strong></button>
+        <button class="navButton" type="button" data-tab="log"><span>04</span><strong>Activity</strong></button>
+        <button class="navButton" type="button" id="exitButton" style="color: #ff5555;"><span>05</span><strong>Exit</strong></button>
+      </div>
+      <div class="railStatus">
+        <span id="railBackend">__BACKEND__</span>
+        <strong id="railReady">Connecting</strong>
+      </div>
+    </nav>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Coding team cockpit</p>
+          <h1 id="modeTitle">Shared channel</h1>
+          <p id="modeSummary">Coordinate your widget, Codex/Hermes backend, and crew sub-agents from one live desk.</p>
+        </div>
+        <div class="statusStrip">
+          <span class="chip" id="readyChip">Connecting</span>
+          <span class="chip" id="backendChip">__BACKEND__</span>
+          <span class="chip">:__PORT__</span>
+        </div>
+      </header>
+
+      <section class="missionGrid">
+        <section class="heroPanel" data-pane="command">
+          <div class="orbital">
+            <div class="orbit orbitOne"></div>
+            <div class="orbit orbitTwo"></div>
+            <div class="orbit orbitThree"></div>
+            <img src="/assets/dev-deck-logo.svg" alt="Dev Deck logo" />
+            <span class="node n1"></span><span class="node n2"></span><span class="node n3"></span><span class="node n4"></span>
+          </div>
+          <div class="missionCopy">
+            <p class="modeBadge">Operator: Frank</p>
+            <h2>Team cockpit online</h2>
+            <p>Your small widget can keep the quick conversation going while this window tracks the bigger operation: agents, task state, backend, and recent decisions.</p>
+            <div class="signalPanel" aria-label="Crew signals">
+              <div class="signalTop"><strong>Crew signals</strong><span id="signalCount">0 live</span></div>
+              <div id="crewSignals" class="crewSignals"></div>
+            </div>
+            <div class="actionRow">
+              <button type="button" data-prompt="/task implement ">Dispatch task</button>
+              <button type="button" data-prompt="/ideas research similar agent UI features for this project">Ask for ideas</button>
+              <button type="button" data-tab="team">Inspect team</button>
+              <button type="button" data-prompt="/agents">Sync agents</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="metrics" data-pane="command" aria-label="Mission analytics">
+          <div class="metric"><span>Active</span><strong id="metricActive">0</strong></div>
+          <div class="metric"><span>Completed</span><strong id="metricDone">0</strong></div>
+          <div class="metric"><span>Success</span><strong id="metricSuccess">100%</strong></div>
+          <div class="metric"><span>Events</span><strong id="metricEvents">0</strong></div>
+        </section>
+
+        <section class="teamPanel" data-pane="team">
+          <div class="panelTop"><strong>Crew roster</strong><span class="chip" id="agentCount">0 agents</span></div>
+          <div class="agentGrid" id="agentGrid"></div>
+        </section>
+
+        <section class="boardPanel" data-pane="board">
+          <div class="panelTop"><strong>Kanban board</strong><span id="taskCount" class="chip">0 tasks</span></div>
+          <div class="lanes" id="lanes"></div>
+        </section>
+
+        <section class="terminal" data-pane="command">
+          <div class="terminalTop">
+            <strong>Shared channel</strong>
+            <span class="modeBadge">Widget + Big Window</span>
+          </div>
+          <section id="transcript" aria-live="polite"></section>
+        </section>
+
+        <section class="activityPanel" data-pane="log">
+          <div class="panelTop"><strong>Activity log</strong><span class="chip" id="activityCount">0</span></div>
+          <div class="activity" id="activity"></div>
+        </section>
+      </section>
+
+      <form id="form" class="composer">
+        <div class="composerShell">
+          <textarea id="input" rows="4" maxlength="4000" placeholder="Issue a command, ask for a review, or launch /task for background work..."></textarea>
+          <div class="quickbar" aria-label="Quick prompts">
+            <button type="button" data-prompt="/task implement ">Task</button>
+            <button type="button" data-prompt="/ideas research similar agent UI features for this project">Ideas</button>
+            <button type="button" data-prompt="review the current diff">Review</button>
+            <button type="button" data-prompt="/tasks">Tasks</button>
+            <button type="button" data-prompt="/model">Model</button>
+            <button type="button" data-prompt="/presets">Presets</button>
+          </div>
+        </div>
+        <button id="send" type="submit">Run</button>
+      </form>
+    </section>
+
+    <aside class="inspector">
+      <section class="sidePanel">
+        <div class="panelTop"><strong>Team feed</strong><span class="chip" id="turnChip">0 turns</span></div>
+        <div class="facts" id="inspectorBody">
+          <div class="detailHero">
+            <span class="modeBadge" id="detailStatus">Team feed</span>
+            <h2 id="detailTitle">Ready for a coding session</h2>
+            <p id="detailBody">Backend, workspace, bridge status, and the selected crew member/task live here. Pick a card to turn this panel into an action brief.</p>
+          </div>
+          <div class="fact"><strong>Backend</strong><span id="backendFact">__BACKEND__</span></div>
+          <div class="fact"><strong>Workspace</strong><span>__WORKSPACE__</span></div>
+          <div class="fact"><strong>Bridge</strong><span>127.0.0.1:__PORT__</span></div>
+          <div class="opsActions" aria-label="Session quick actions">
+            <button type="button" data-prompt="/agents">Sync crew</button>
+            <button type="button" data-prompt="/tasks">Check tasks</button>
+            <button type="button" data-prompt="review the current diff">Review diff</button>
+            <button type="button" data-prompt="/task inspect this workspace and summarize the important files, risks, and next steps">Inspect workspace</button>
+          </div>
+          <button class="ghostAction" id="copyStatus" type="button">Select a crew member or task</button>
+        </div>
+      </section>
+      <section class="sidePanel">
+        <div class="panelTop"><strong>Widget link</strong><span class="chip" id="widgetChip">Online</span></div>
+        <div class="widgetLink">
+          <div class="widgetPulse"></div>
+          <p>Small widget commands and big-window commands share the same bridge, task board, and activity stream.</p>
+          <button type="button" data-prompt="open big window mode">Test widget command</button>
+        </div>
+      </section>
+    </aside>
+  </main>
+  <script src="/assets/command-deck.js"></script>
+</body>
+</html>

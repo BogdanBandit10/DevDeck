@@ -1,0 +1,53 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Dev Deck logo</title>
+  <desc id="desc">Dark developer deck glyph with terminal cursor, connected nodes, and cyan green glow.</desc>
+  <defs>
+    <radialGradient id="coreGlow" cx="50%" cy="44%" r="62%">
+      <stop offset="0%" stop-color="#1de6ff" stop-opacity="0.34"/>
+      <stop offset="42%" stop-color="#19ffc3" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#03070b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="panel" x1="102" y1="75" x2="418" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="0.52" stop-color="#071018"/>
+      <stop offset="1" stop-color="#05070b"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="100" y1="82" x2="417" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67e8f9"/>
+      <stop offset="0.5" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.12 0 0 0 0 0.88 0 0 0 0 1 0 0 0 .65 0" result="cyan"/>
+      <feMerge>
+        <feMergeNode in="cyan"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="118" fill="#05070b"/>
+  <rect x="24" y="24" width="464" height="464" rx="96" fill="url(#coreGlow)"/>
+  <path d="M112 108C112 86.461 129.461 69 151 69H321C369.601 69 409 108.399 409 157V355C409 403.601 369.601 443 321 443H151C129.461 443 112 425.539 112 404V108Z" fill="url(#panel)" stroke="url(#edge)" stroke-width="8" filter="url(#softShadow)"/>
+
+  <path d="M165 152H300C327.062 152 349 173.938 349 201V311C349 338.062 327.062 360 300 360H165V152Z" fill="#08121b" stroke="#203449" stroke-width="10"/>
+  <path d="M188 205L231 256L188 307" stroke="#67e8f9" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="M250 307H312" stroke="#34d399" stroke-width="24" stroke-linecap="round" filter="url(#glow)"/>
+
+  <path d="M315 124V95" stroke="#67e8f9" stroke-width="8" stroke-linecap="round" opacity="0.85"/>
+  <path d="M379 194H409" stroke="#22c55e" stroke-width="8" stroke-linecap="round" opacity="0.85"/>
+  <path d="M379 318H409" stroke="#8b5cf6" stroke-width="8" stroke-linecap="round" opacity="0.85"/>
+  <path d="M315 388V418" stroke="#34d399" stroke-width="8" stroke-linecap="round" opacity="0.85"/>
+
+  <circle cx="315" cy="95" r="15" fill="#071018" stroke="#67e8f9" stroke-width="7" filter="url(#glow)"/>
+  <circle cx="409" cy="194" r="15" fill="#071018" stroke="#22c55e" stroke-width="7" filter="url(#glow)"/>
+  <circle cx="409" cy="318" r="15" fill="#071018" stroke="#8b5cf6" stroke-width="7" filter="url(#glow)"/>
+  <circle cx="315" cy="418" r="15" fill="#071018" stroke="#34d399" stroke-width="7" filter="url(#glow)"/>
+
+  <path d="M151 108H321C348.062 108 370 129.938 370 157V355C370 382.062 348.062 404 321 404H151" stroke="#dbeafe" stroke-opacity="0.16" stroke-width="2"/>
+  <path d="M151 109C136.641 109 125 120.641 125 135V377C125 391.359 136.641 403 151 403" stroke="#67e8f9" stroke-opacity="0.38" stroke-width="3"/>
+</svg>
