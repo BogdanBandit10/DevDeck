@@ -1256,6 +1256,23 @@ def task_queue_get_response(task_id: str, request_id: str) -> dict[str, Any]:
     return queue_response(task=task, request_id=request_id)
 
 
+def task_queue_packet_response(task_id: str, request_id: str) -> dict[str, Any]:
+    queue_obj = require_task_queue()
+    task = queue_obj.get(task_id)
+    if not task:
+        raise TaskQueueNotFoundError(f"No task found with id {task_id}")
+    return {
+        "success": True,
+        "ok": True,
+        "request_id": request_id,
+        "task_id": task.get("task_id"),
+        "status": task.get("status"),
+        "claimed_by": task.get("claimed_by") or "",
+        "claimed_at": task.get("claimed_at"),
+        "packet": task.get("packet") if isinstance(task.get("packet"), dict) else {},
+    }
+
+
 def task_queue_create_response(payload: dict[str, Any], request_id: str) -> dict[str, Any]:
     queue_obj = require_task_queue()
     task = queue_obj.create(payload, source="bridge")
@@ -1263,17 +1280,41 @@ def task_queue_create_response(payload: dict[str, Any], request_id: str) -> dict
     return queue_response(task=task, request_id=request_id)
 
 
+def task_queue_executor(payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("executor")
+        or payload.get("executor_id")
+        or payload.get("claimed_by")
+        or payload.get("operator")
+        or ""
+    ).strip()
+
+
+def task_queue_result_payload(payload: dict[str, Any], *, required: bool = False) -> dict[str, Any] | None:
+    if isinstance(payload.get("result"), dict):
+        return payload["result"]
+    result_keys = {"summary", "files_read", "commands_run", "files_changed", "diff", "errors", "unverified"}
+    if any(key in payload for key in result_keys):
+        return {key: payload[key] for key in result_keys if key in payload}
+    if required:
+        raise TaskQueueValidationError("result must be a JSON object or include result fields")
+    return None
+
+
 def task_queue_status_response(task_id: str, action: str, payload: dict[str, Any], request_id: str) -> dict[str, Any]:
     queue_obj = require_task_queue()
+    executor = task_queue_executor(payload)
     if action == "running":
         task = queue_obj.mark_running(task_id)
+    elif action == "claim":
+        task = queue_obj.claim(task_id, executor=executor or "manual", note=str(payload.get("note") or payload.get("message") or ""))
+    elif action == "result":
+        task = queue_obj.submit_result(task_id, task_queue_result_payload(payload, required=True) or {}, executor=executor)
     elif action == "complete":
-        result = payload.get("result") if isinstance(payload, dict) else None
-        task = queue_obj.mark_completed(task_id, result if isinstance(result, dict) else payload)
+        task = queue_obj.mark_completed(task_id, result=task_queue_result_payload(payload), executor=executor)
     elif action == "fail":
-        result = payload.get("result") if isinstance(payload, dict) else None
         error = str(payload.get("error") or payload.get("message") or "Task failed.") if isinstance(payload, dict) else "Task failed."
-        task = queue_obj.mark_failed(task_id, error=error, result=result if isinstance(result, dict) else None)
+        task = queue_obj.mark_failed(task_id, error=error, result=task_queue_result_payload(payload), executor=executor)
     else:
         raise TaskQueueValidationError(f"Unknown task queue action: {action}")
     record_activity("task_queue", f"Durable task {task_id} marked {task['status']}.", source="bridge", status=task["status"], request_id=request_id, task_id=task_id)
@@ -1750,7 +1791,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 parts = path.split("/")
                 task_id = parts[3] if len(parts) > 3 else ""
-                self._send_json(task_queue_get_response(task_id, request_id))
+                action = parts[4] if len(parts) > 4 else ""
+                if action == "packet":
+                    self._send_json(task_queue_packet_response(task_id, request_id))
+                elif action:
+                    self._send_json(make_response("not found", ok=False, error=f"unknown path: {path}", request_id=request_id), 404)
+                else:
+                    self._send_json(task_queue_get_response(task_id, request_id))
             except Exception as exc:
                 append_log("bridge.log", f"{request_id} task queue get error: {exc}")
                 body, status = queue_error_response(exc, request_id)
@@ -1779,7 +1826,7 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.split("/")
                 task_id = parts[3] if len(parts) > 3 else ""
                 action = parts[4] if len(parts) > 4 else ""
-                if action not in {"running", "complete", "fail"}:
+                if action not in {"running", "claim", "result", "complete", "fail"}:
                     self._send_json(make_response("not found", ok=False, error=f"unknown path: {path}", request_id=request_id), 404)
                     return
                 self._send_json(task_queue_status_response(task_id, action, payload if isinstance(payload, dict) else {}, request_id))

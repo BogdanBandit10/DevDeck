@@ -14,6 +14,8 @@ from typing import Any
 REQUIRED_PACKET_FIELDS = ("TASK", "FILES", "ACTIONS", "RESTRICTIONS", "OUTPUT FORMAT", "STOP CONDITIONS")
 VALID_STATUSES = {"pending", "running", "completed", "failed"}
 TERMINAL_STATUSES = {"completed", "failed"}
+LIST_RESULT_FIELDS = {"files_read", "commands_run", "files_changed"}
+TEXT_RESULT_FIELDS = {"summary", "diff", "errors", "unverified"}
 
 
 class TaskQueueError(Exception):
@@ -107,16 +109,22 @@ def default_result() -> dict[str, Any]:
 
 
 def append_event(task: dict[str, Any], event_type: str, message: str, **extra: Any) -> None:
-    events = task.setdefault("events", [])
-    if not isinstance(events, list):
-        events = []
-        task["events"] = events
-    events.append({
+    event = {
         "at": now_iso(),
         "type": event_type,
         "message": message,
         **extra,
-    })
+    }
+    events = task.setdefault("events", [])
+    if not isinstance(events, list):
+        events = []
+        task["events"] = events
+    events.append(event)
+    history = task.setdefault("execution_history", [])
+    if not isinstance(history, list):
+        history = []
+        task["execution_history"] = history
+    history.append(event.copy())
 
 
 class DurableTaskQueue:
@@ -152,11 +160,15 @@ class DurableTaskQueue:
             "created_at": created_at,
             "updated_at": created_at,
             "started_at": None,
+            "claimed_at": None,
+            "claimed_by": "",
+            "result_submitted_at": None,
             "completed_at": None,
             "packet": packet,
             "result": default_result(),
             "error": "",
             "events": [],
+            "execution_history": [],
         }
         append_event(task, "created", "Task created.")
         with self.lock:
@@ -196,30 +208,41 @@ class DurableTaskQueue:
             raise TaskQueueNotFoundError(f"No task found with id {task_id}")
         return task
 
-    def update_status(self, task_id: str, status: str, result: dict[str, Any] | None = None, error: str = "") -> dict[str, Any]:
+    def update_status(
+        self,
+        task_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+        executor: str = "",
+    ) -> dict[str, Any]:
         if status not in VALID_STATUSES:
             raise TaskQueueValidationError(f"Invalid status: {status}")
         with self.lock:
             task = self.require(task_id)
             current = str(task.get("status") or "")
             self.validate_transition(current, status)
+            self.validate_executor(task, executor)
             task["status"] = status
             task["updated_at"] = now_iso()
             if status == "running":
                 task["started_at"] = task.get("started_at") or now_iso()
-                append_event(task, "running", "Task marked running.")
+                append_event(task, "running", "Task marked running.", executor=str(executor or ""))
             elif status == "completed":
                 task["completed_at"] = now_iso()
-                task["result"] = self.normalize_result(result)
+                if result is not None:
+                    task["result"] = self.normalize_result(result)
+                    task["result_submitted_at"] = task.get("result_submitted_at") or now_iso()
                 task["error"] = ""
-                append_event(task, "completed", "Task completed.")
+                append_event(task, "completed", "Task completed.", executor=str(executor or ""))
                 self.write_result_file(task)
             elif status == "failed":
                 task["completed_at"] = now_iso()
                 task["error"] = str(error or "")
                 if result is not None:
                     task["result"] = self.normalize_result(result)
-                append_event(task, "failed", task["error"] or "Task failed.")
+                    task["result_submitted_at"] = task.get("result_submitted_at") or now_iso()
+                append_event(task, "failed", task["error"] or "Task failed.", executor=str(executor or ""))
                 self.write_result_file(task)
             atomic_write_json(self.task_path(task_id), task)
         return task
@@ -227,11 +250,50 @@ class DurableTaskQueue:
     def mark_running(self, task_id: str) -> dict[str, Any]:
         return self.update_status(task_id, "running")
 
-    def mark_completed(self, task_id: str, result: dict[str, Any]) -> dict[str, Any]:
-        return self.update_status(task_id, "completed", result=result)
+    def claim(self, task_id: str, executor: str = "manual", note: str = "") -> dict[str, Any]:
+        executor = str(executor or "manual").strip() or "manual"
+        with self.lock:
+            task = self.require(task_id)
+            current = str(task.get("status") or "")
+            if current != "pending":
+                raise TaskQueueTransitionError(f"Only pending tasks can be claimed; current status is {current}")
+            claimed_by = str(task.get("claimed_by") or "").strip()
+            if claimed_by and claimed_by != executor:
+                raise TaskQueueTransitionError(f"Task is already claimed by {claimed_by}")
+            task["status"] = "running"
+            task["started_at"] = task.get("started_at") or now_iso()
+            task["claimed_at"] = task.get("claimed_at") or now_iso()
+            task["claimed_by"] = executor
+            task["updated_at"] = now_iso()
+            append_event(task, "claimed", f"Task claimed by {executor}.", executor=executor, note=str(note or ""))
+            atomic_write_json(self.task_path(task_id), task)
+        return task
 
-    def mark_failed(self, task_id: str, error: str, result: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.update_status(task_id, "failed", result=result, error=error)
+    def submit_result(self, task_id: str, result: dict[str, Any], executor: str = "") -> dict[str, Any]:
+        with self.lock:
+            task = self.require(task_id)
+            current = str(task.get("status") or "")
+            if current != "running":
+                raise TaskQueueTransitionError(f"Results can only be submitted for running tasks; current status is {current}")
+            self.validate_executor(task, executor)
+            task["result"] = self.normalize_result(result)
+            task["result_submitted_at"] = now_iso()
+            task["updated_at"] = now_iso()
+            append_event(task, "result_submitted", "Task result submitted.", executor=str(executor or ""))
+            atomic_write_json(self.task_path(task_id), task)
+        return task
+
+    def mark_completed(self, task_id: str, result: dict[str, Any] | None = None, executor: str = "") -> dict[str, Any]:
+        return self.update_status(task_id, "completed", result=result, executor=executor)
+
+    def mark_failed(self, task_id: str, error: str, result: dict[str, Any] | None = None, executor: str = "") -> dict[str, Any]:
+        return self.update_status(task_id, "failed", result=result, error=error, executor=executor)
+
+    def validate_executor(self, task: dict[str, Any], executor: str = "") -> None:
+        claimed_by = str(task.get("claimed_by") or "").strip()
+        executor = str(executor or "").strip()
+        if claimed_by and executor and executor != claimed_by:
+            raise TaskQueueTransitionError(f"Task is claimed by {claimed_by}, not {executor}")
 
     def validate_transition(self, current: str, new: str) -> None:
         if current not in VALID_STATUSES:
@@ -253,7 +315,18 @@ class DurableTaskQueue:
         if not isinstance(result, dict):
             raise TaskQueueValidationError("result must be a JSON object")
         normalized = default_result()
-        normalized.update(result)
+        extras = {key: value for key, value in result.items() if key not in normalized}
+        for key in TEXT_RESULT_FIELDS:
+            normalized[key] = str(result.get(key) or "")
+        for key in LIST_RESULT_FIELDS:
+            value = result.get(key)
+            if value is None or value == "":
+                normalized[key] = []
+            elif isinstance(value, list):
+                normalized[key] = [str(item).strip() for item in value if str(item).strip()]
+            else:
+                normalized[key] = [str(value).strip()] if str(value).strip() else []
+        normalized.update(extras)
         return normalized
 
     def write_result_file(self, task: dict[str, Any]) -> None:
