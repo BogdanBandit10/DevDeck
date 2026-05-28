@@ -1,0 +1,12 @@
+{
+  "name": "dev-deck",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "connector": "node connector/dev-deck-mcp-server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  }
+}

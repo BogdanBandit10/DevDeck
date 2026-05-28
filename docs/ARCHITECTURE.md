@@ -5,19 +5,19 @@
 - Dev Deck launcher: `Dev Deck.exe` and `dev_deck_launcher.py` start or reuse the local bridge, then open Big Window mode.
 - Hermes bridge: `hermes_bridge/hermes_bridge.py` exposes local HTTP endpoints and coordinates app state.
 - Browser Big Window UI: `hermes_bridge/assets/` contains the local browser interface.
-- OpenCode + LM Studio: OpenCode executes scoped repo tasks using LM Studio's OpenAI-compatible local API.
-- ChatGPT: planner, reviewer, and task packet author.
+- Brain (ChatGPT): Planner, reviewer, and task packet author.
+- Hands (OpenCode + LM Studio): Executes scoped, spoon-fed repo tasks.
 
 ## Control Flow
 
 ```text
 User
-  -> ChatGPT plans and reviews
+  -> Brain (ChatGPT) plans and reviews
   -> User relays task packet
-  -> OpenCode executes scoped task
+  -> Hands (OpenCode) executes surgical task
   -> LM Studio serves local model
-  -> OpenCode returns output/diff/errors
-  -> User relays result to ChatGPT
+  -> Hands returns output/diff/errors
+  -> User relays result to Brain
 ```
 
 ## App Flow

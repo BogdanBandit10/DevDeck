@@ -6,3 +6,5 @@ hermes_bridge/__pycache__/
 hermes_bridge/bridge_status.json
 hermes_bridge/supervisor_state.json
 *.pyc
+node_modules/
+npm-debug.log*

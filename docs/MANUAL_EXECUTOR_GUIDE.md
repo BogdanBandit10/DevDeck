@@ -1,6 +1,6 @@
 # Manual Executor Guide
 
-This guide documents how a human-operated OpenCode executor consumes one queued Dev Deck task. The bridge stores task packets and results only. It does not launch OpenCode, execute subprocesses, run background workers, or decide how the task should be performed.
+This guide documents how a human-operated OpenCode executor consumes one queued Dev Deck task. The bridge stores task packets and results. It can also run OpenCode after an explicit local approval from the Dev Deck Queue view.
 
 ## Workflow
 
@@ -16,6 +16,17 @@ ChatGPT task packet
   -> human runs the task in OpenCode
   -> human submits the result
   -> human marks the task completed or failed
+```
+
+The approved local workflow is:
+
+```text
+ChatGPT task packet
+  -> MCP connector queues task
+  -> user opens Dev Deck Queue
+  -> user clicks Approve & Run
+  -> bridge runs OpenCode locally once
+  -> bridge stores the result and marks the task completed or failed
 ```
 
 Use the queue as a coordination record. OpenCode remains a separate manual tool operated by the user.
@@ -88,6 +99,24 @@ Required execution rules:
 - Report files read, commands run, files changed, diffs or summaries, errors, and anything unverified.
 
 If OpenCode needs broader context, stop and return that need as the result instead of improvising.
+
+## Approve And Run Locally
+
+In the Dev Deck Queue tab, select a pending task and click `Approve & Run`. This is the only path that lets a queued task launch OpenCode automatically.
+
+The approved runner uses the configured command, working directory, model, and timeout from `hermes_bridge/config.json`:
+
+```json
+{
+  "opencode_command": "opencode",
+  "opencode_working_directory": ".",
+  "opencode_model": "lmstudio/qwen3.5-9b-mtp",
+  "opencode_timeout_seconds": 600,
+  "opencode_skip_permissions_after_approval": true
+}
+```
+
+The runner records git status before and after execution. If the task succeeds, it is marked completed; if OpenCode fails or times out, it is marked failed.
 
 ## Submit Results
 

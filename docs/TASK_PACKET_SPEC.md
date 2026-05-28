@@ -1,6 +1,6 @@
 # Task Packet Spec
 
-Use this exact structure for OpenCode brawn tasks.
+Every OpenCode **Hands** task must use this exact structure.
 
 ```text
 TASK
@@ -13,13 +13,13 @@ ACTIONS
 1. Ordered steps to perform.
 
 RESTRICTIONS
-- Limits on edits, commands, scope, and retries.
+- Limits on edits, commands, scope, and retries. (Assume 32k context/9B reasoning).
 
 OUTPUT FORMAT
 - Required result fields.
 
 STOP CONDITIONS
-- When to stop and report instead of continuing.
+- Specific triggers to stop and report to the Brain.
 ```
 
 ## Example: Inspect One File

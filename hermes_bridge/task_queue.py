@@ -144,16 +144,16 @@ class DurableTaskQueue:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 
     def task_path(self, task_id: str) -> Path:
-        if not task_id.startswith("task_") or any(ch in task_id for ch in "\\/"):
+        if not (task_id.startswith("task_") or task_id.startswith("tsk_")) or any(ch in task_id for ch in "\\/"):
             raise TaskQueueValidationError("Invalid task_id")
         return self.tasks_dir / f"{task_id}.json"
 
-    def create(self, payload: dict[str, Any], source: str = "manual") -> dict[str, Any]:
+    def create(self, payload: dict[str, Any], source: str = "manual", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         packet = normalize_packet(payload)
-        task_id = new_task_id()
+        task_id = "tsk_" + uuid.uuid4().hex[:6]
         created_at = now_iso()
         task = {
-            "schema_version": 1,
+            "schema_version": 2,
             "task_id": task_id,
             "status": "pending",
             "source": str(source or "manual"),
@@ -165,15 +165,40 @@ class DurableTaskQueue:
             "result_submitted_at": None,
             "completed_at": None,
             "packet": packet,
+            "message": str(payload.get("message") or ""),
+            "intent": str(payload.get("intent") or "task"),
+            "agent_name": str(payload.get("agent_name") or "Hermes"),
+            "progress_message": "Queued.",
             "result": default_result(),
             "error": "",
             "events": [],
             "execution_history": [],
+            "metadata": metadata or {},
         }
         append_event(task, "created", "Task created.")
         with self.lock:
             atomic_write_json(self.task_path(task_id), task)
         return task
+
+    def start_background(self, task_id: str, runner: Callable[[str, str, str], str]) -> None:
+        """Start a background assistant task using a provided runner."""
+        thread = threading.Thread(target=self._run_assistant_task, args=(task_id, runner), daemon=True)
+        thread.start()
+
+    def _run_assistant_task(self, task_id: str, runner: Callable[[str, str, str], str]) -> None:
+        task = self.get(task_id)
+        if not task: return
+        
+        agent_name = task.get("agent_name", "Hermes")
+        self.update_status(task_id, "running", progress_message=f"{agent_name} is working.")
+        
+        try:
+            # Runner is usually rt.chat(message, req_id, agent_name)
+            message = task.get("message", "")
+            response = runner(message, f"async_{task_id}", agent_name)
+            self.mark_completed(task_id, result={"summary": response})
+        except Exception as exc:
+            self.mark_failed(task_id, error=str(exc))
 
     def list(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         if status and status not in VALID_STATUSES:
@@ -182,7 +207,7 @@ class DurableTaskQueue:
         tasks: list[dict[str, Any]] = []
         errors: list[str] = []
         with self.lock:
-            for path in self.tasks_dir.glob("task_*.json"):
+            for path in list(self.tasks_dir.glob("task_*.json")) + list(self.tasks_dir.glob("tsk_*.json")):
                 try:
                     task = read_json(path)
                 except Exception as exc:
@@ -215,6 +240,7 @@ class DurableTaskQueue:
         result: dict[str, Any] | None = None,
         error: str = "",
         executor: str = "",
+        progress_message: str = "",
     ) -> dict[str, Any]:
         if status not in VALID_STATUSES:
             raise TaskQueueValidationError(f"Invalid status: {status}")
@@ -225,6 +251,8 @@ class DurableTaskQueue:
             self.validate_executor(task, executor)
             task["status"] = status
             task["updated_at"] = now_iso()
+            if progress_message:
+                task["progress_message"] = progress_message
             if status == "running":
                 task["started_at"] = task.get("started_at") or now_iso()
                 append_event(task, "running", "Task marked running.", executor=str(executor or ""))
@@ -367,7 +395,7 @@ class DurableTaskQueue:
 
     def recover_running_tasks(self) -> None:
         with self.lock:
-            for path in self.tasks_dir.glob("task_*.json"):
+            for path in list(self.tasks_dir.glob("task_*.json")) + list(self.tasks_dir.glob("tsk_*.json")):
                 try:
                     task = read_json(path)
                     if task.get("status") != "running":
@@ -380,3 +408,20 @@ class DurableTaskQueue:
                     atomic_write_json(path, task)
                 except Exception as exc:
                     self.queue_errors.append(f"{path.name}: {exc}")
+
+    def clear_terminal(self) -> int:
+        """Deletes all tasks with a terminal status to keep the queue clean."""
+        count = 0
+        terminal_states = TERMINAL_STATUSES | {"error", "cancel_requested", "rejected"}
+        with self.lock:
+            for path in list(self.tasks_dir.glob("task_*.json")) + list(self.tasks_dir.glob("tsk_*.json")):
+                try:
+                    task = read_json(path)
+                    if str(task.get("status") or "") in terminal_states:
+                        path.unlink(missing_ok=True)
+                        log_path = self.logs_dir / f"{task.get('task_id')}.log"
+                        log_path.unlink(missing_ok=True)
+                        count += 1
+                except Exception:
+                    pass
+        return count

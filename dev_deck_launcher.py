@@ -71,10 +71,12 @@ def bridge_ready(timeout: float = 0.7) -> bool:
 
 
 def find_pythonw() -> str:
-    hermes_pythonw = Path(r"C:\Users\frank\AppData\Local\hermes\hermes-agent\venv\Scripts\pythonw.exe")
+    local_appdata = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    hermes_root = local_appdata / "hermes" / "hermes-agent" / "venv" / "Scripts"
+    hermes_pythonw = hermes_root / "pythonw.exe"
     if hermes_pythonw.exists():
         return str(hermes_pythonw)
-    hermes_python = Path(r"C:\Users\frank\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe")
+    hermes_python = hermes_root / "python.exe"
     if hermes_python.exists():
         return str(hermes_python)
     return "pythonw.exe"

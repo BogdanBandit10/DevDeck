@@ -89,6 +89,12 @@ AGENT_PROFILES: dict[str, dict[str, str]] = {
         "hands_off_to": "Forge for implementation, Mike for cleanup, or Shield for accessibility and risk review",
         "system_prompt": "You are Muse, the UI/UX design specialist. You design practical, polished interfaces with clear hierarchy, ergonomic workflows, responsive layouts, accessibility, and restrained visual style. You critique clutter, unclear states, weak controls, and confusing flows. You hand implementation-ready specs to Forge and cleanup concerns to Mike."
     },
+    "Atlas": {
+        "role": "system_architect",
+        "hands_off_to": "Mike for implementation, Hermes for discussion",
+        "owns": "Architecture design, complex refactoring plans, codebase navigation, memory indexing",
+        "system_prompt": "You are Atlas, the system architect. You design robust solutions and navigate large codebases. You prioritize clean structure and maintainability. You have access to the Dev Deck Memory Indexer. To search the codebase instantly, run: `python \"tools/memory_store.py\" search \"your keyword\"`. (Ensure you have built the index first with `python \"tools/memory_store.py\" index \".\"`)."
+    },
     "Scout": {
         "role": "repo_scout",
         "animation": "searching",
@@ -96,25 +102,16 @@ AGENT_PROFILES: dict[str, dict[str, str]] = {
         "quip": "Scouting the repo, patterns, and nearby better ideas.",
         "owns": "repo discovery, similar-project comparisons, file maps, and idea scouting",
         "hands_off_to": "Atlas for planning or Forge for implementation",
-        "system_prompt": "You are Scout, the fast repo and research scout. You quickly map projects, identify similar patterns, and bring back concise practical findings. You do not implement code unless explicitly asked; you hand clear findings to Atlas, Forge, Mike, or Shield."
+        "system_prompt": "You are Scout, the fast repo and research scout. You quickly map projects, identify similar patterns, and bring back concise practical findings. You have access to the Dev Deck Memory Indexer (`python tools/memory_store.py search <query>`) and the Browser Inspector (`python tools/browser_inspector.py dump <url>`). You do not implement code unless explicitly asked; you hand clear findings to Atlas, Forge, Mike, or Shield."
     },
     "Beacon": {
-        "role": "research",
+        "role": "web_and_ui_specialist",
         "animation": "searching",
         "mood": "curious",
-        "quip": "Scanning docs, patterns, and better angles.",
-        "owns": "external research, documentation checks, and current ecosystem patterns",
-        "hands_off_to": "Scout for repo mapping or Atlas for turning research into a plan",
-        "system_prompt": "You are Beacon, the external research specialist. You check docs, ecosystem patterns, and similar projects, then hand concise findings to Scout or Atlas."
-    },
-    "Atlas": {
-        "role": "planner",
-        "animation": "thinking",
-        "mood": "strategic",
-        "quip": "Plotting the route before we burn fuel.",
-        "owns": "plans, sequencing, task breakdowns, and deciding who should act next",
-        "hands_off_to": "Forge for building, Mike for cleanup, Shield for review, or Scout for discovery",
-        "system_prompt": "You are Atlas, the strategic planner. You create concrete numbered plans, decide who owns each step, and explain why the next agent should take over."
+        "quip": "Connecting to external streams and documentation.",
+        "owns": "Web UIs, browser testing, frontend frameworks, CSS/HTML, accessibility",
+        "hands_off_to": "Mike for backend integration, Hermes when stuck",
+        "system_prompt": "You are Beacon, the web and UI specialist. You build and test frontends, ensuring they look great and function perfectly. You have access to the Dev Deck Browser Inspector. To fetch and read a webpage, run: `python \"tools/browser_inspector.py\" dump \"http://localhost:3000\"`. This returns a clean text dump of the DOM."
     },
     "Hermes": {
         "role": "general_assistant",
@@ -340,6 +337,12 @@ def capabilities_payload() -> dict[str, Any]:
         "assistant_agents": "/assistant/agents",
         "assistant_presets": "/assistant/presets",
         "assistant_capabilities": "/assistant/capabilities",
+        "brawn_commands": "/brawn/commands",
+        "brawn_command_detail": "/brawn/commands/<command_id>",
+        "brawn_command_ack": "/brawn/commands/<command_id>/ack",
+        "brawn_command_complete": "/brawn/commands/<command_id>/complete",
+        "brawn_command_fail": "/brawn/commands/<command_id>/fail",
+        "brawn_command_reject": "/brawn/commands/<command_id>/reject",
     }
     return {
         "assistant_protocol": "jarvis-phase6-v1",
@@ -353,6 +356,7 @@ def capabilities_payload() -> dict[str, Any]:
             "model_switching": True,
             "integrated_exit": True,
             "quick_actions": True,
+            "brain_only_brawn_inbox": True,
         },
     }
 
@@ -393,133 +397,5 @@ def format_presets_for_chat() -> str:
     return "\n".join(lines)
 
 
-@dataclass
-class AssistantTask:
-    task_id: str
-    message: str
-    intent: str
-    agent_name: str
-    status: str = "queued"
-    created_at: str = field(default_factory=now_iso)
-    updated_at: str = field(default_factory=now_iso)
-    started_at: str | None = None
-    completed_at: str | None = None
-    progress_message: str = "Queued."
-    response: str = ""
-    error: str = ""
-    animation: str = "working"
-    quip: str = "On it."
-    request_id: str = ""
-
-
-class TaskRegistry:
-    def __init__(self):
-        self.lock = threading.RLock()
-        self.tasks: dict[str, AssistantTask] = {}
-        self.cancel_requested: set[str] = set()
-
-    def create(self, message: str, metadata: dict[str, Any], request_id: str = "") -> AssistantTask:
-        task_id = "task_" + uuid.uuid4().hex[:12]
-        task = AssistantTask(
-            task_id=task_id,
-            message=strip_async_prefix(message),
-            intent=str(metadata.get("intent") or metadata.get("mode") or "long_running_task"),
-            agent_name=str(metadata.get("agent_name") or "Hermes"),
-            progress_message=f"{metadata.get('agent_name', 'Hermes')} is queued: {metadata.get('quip', 'On it.')}",
-            animation=str(metadata.get("animation") or "working"),
-            quip=str(metadata.get("quip") or "On it."),
-            request_id=request_id,
-        )
-        with self.lock:
-            self.tasks[task_id] = task
-        return task
-
-    def start_background(self, task: AssistantTask, runner: Callable[[str, str, str], str]) -> None:
-        thread = threading.Thread(target=self._run_task, args=(task.task_id, runner), daemon=True)
-        thread.start()
-
-    def _run_task(self, task_id: str, runner: Callable[[str, str, str], str]) -> None:
-        task = self.get_task_obj(task_id)
-        if not task:
-            return
-        self.update(task_id, status="running", started_at=now_iso(), progress_message=f"{task.agent_name} is working: {task.quip}")
-        try:
-            prompt = self._build_task_prompt(task)
-            response = runner(prompt, f"async_{task_id}", task.agent_name)
-            if task_id in self.cancel_requested:
-                self.update(task_id, status="cancel_requested", progress_message="Cancel was requested, but the Hermes turn may have already completed.", response=response or "")
-            else:
-                self.update(task_id, status="completed", completed_at=now_iso(), progress_message=f"{task.agent_name} finished.", response=response or "")
-        except Exception as exc:
-            TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
-            (TASK_LOG_DIR / f"{task_id}_error.txt").write_text(traceback.format_exc(), encoding="utf-8", errors="replace")
-            self.update(task_id, status="error", completed_at=now_iso(), progress_message=f"{task.agent_name} hit an error.", error=str(exc))
-
-    def _build_task_prompt(self, task: AssistantTask) -> str:
-        persona = AGENT_PROFILES.get(task.agent_name, {}).get("system_prompt", "")
-        team_lines = []
-        for name, profile in AGENT_PROFILES.items():
-            team_lines.append(
-                f"- {name}: owns {profile.get('owns', profile.get('role', 'assistant'))}; hands off to {profile.get('hands_off_to', 'Hermes when unsure')}"
-            )
-        team_map = "\n".join(team_lines)
-        return (
-            "You are running from the desktop Jarvis widget as a background assistant task.\n"
-            f"Task ID: {task.task_id}\n"
-            f"Detected intent: {task.intent}\n"
-            f"Visible helper character: {task.agent_name}\n\n"
-            "TEAM CONTRACT:\n"
-            f"{team_map}\n\n"
-            "Stay in your lane. If another agent owns the next step, say who should take it and why. "
-            "When you finish, make the handoff explicit.\n\n"
-            f"PERSONA INSTRUCTION: {persona}\n\n"
-            "Do the user's task carefully. If the task would require irreversible or dangerous side effects, explain what confirmation is needed instead of doing it silently. "
-            "When finished, provide a concise result summary suitable for the widget UI. Stay perfectly in character.\n\n"
-            f"User task:\n{task.message}"
-        )
-
-    def update(self, task_id: str, **values: Any) -> None:
-        with self.lock:
-            task = self.tasks.get(task_id)
-            if not task:
-                return
-            for key, value in values.items():
-                if hasattr(task, key):
-                    setattr(task, key, value)
-            task.updated_at = now_iso()
-
-    def request_cancel(self, task_id: str) -> bool:
-        with self.lock:
-            if task_id not in self.tasks:
-                return False
-            self.cancel_requested.add(task_id)
-            self.update(task_id, status="cancel_requested", progress_message="Cancel requested. Waiting for the current Hermes turn to yield.")
-            return True
-
-    def get_task_obj(self, task_id: str) -> AssistantTask | None:
-        with self.lock:
-            return self.tasks.get(task_id)
-
-    def get(self, task_id: str) -> dict[str, Any] | None:
-        task = self.get_task_obj(task_id)
-        return asdict(task) if task else None
-
-    def list(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.lock:
-            items = sorted(self.tasks.values(), key=lambda t: t.updated_at, reverse=True)
-            return [asdict(task) for task in items[:limit]]
-
-    def summarize_for_chat(self, limit: int = 5) -> str:
-        tasks = self.list(limit)
-        if not tasks:
-            return "No assistant tasks yet. Start one with /task followed by what you want me to do."
-        lines = ["Recent assistant tasks:"]
-        for task in tasks:
-            line = f"- {task['task_id']}: {task['status']} | {task['agent_name']} | {task['intent']} | {task['progress_message']}"
-            if task.get("response") and task.get("status") == "completed":
-                preview = str(task["response"]).strip().replace("\n", " ")[:180]
-                line += f" | {preview}"
-            if task.get("error"):
-                line += f" | error: {task['error']}"
-            lines.append(line)
-        return "\n".join(lines)
+# Note: AssistantTask and TaskRegistry have been migrated to task_queue.py
+# for a unified durable tasking backend.
