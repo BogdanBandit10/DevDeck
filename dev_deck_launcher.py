@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -157,9 +158,24 @@ def show_error(message: str) -> None:
         pass
 
 
+def cleanup_state() -> None:
+    log("Cleaning up old state and logs")
+    # Clean turn logs
+    if LOG_DIR.exists():
+        for item in LOG_DIR.glob("*"):
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink(missing_ok=True)
+    # Clean connector state
+    if (BRIDGE_DIR / "connector_state.json").exists():
+        (BRIDGE_DIR / "connector_state.json").unlink()
+
+
 def main() -> int:
     log("Launcher requested")
     try:
+        cleanup_state()
         if not bridge_ready(timeout=0.25):
             start_bridge()
             if not wait_for_bridge():
