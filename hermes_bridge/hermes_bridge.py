@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+import atexit
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,17 @@ from handlers import (
     truncate
 )
 
+def cleanup() -> None:
+    """Final cleanup of external processes on exit."""
+    append_log("bridge.log", "Final cleanup on exit...")
+    cleanup_external_processes()
+
+atexit.register(cleanup)
+
+def handle_exit_signal(sig: int, frame: Any) -> None:
+    append_log("bridge.log", f"Caught exit signal {sig}, shutting down...")
+    sys.exit(0)
+
 def load_config() -> dict[str, Any]:
     try:
         if CONFIG_PATH.exists():
@@ -82,7 +94,8 @@ def load_config() -> dict[str, Any]:
         "port": 44888,
         "mode": "persistent_direct",
         "working_directory": str(ROOT.parent),
-        "chatgpt_connector_enabled": True
+        "chatgpt_connector_enabled": False,
+        "chatgpt_connector_allow_no_auth": False
     }
 
 def reexec_with_configured_python(cfg: dict[str, Any], config_path: str) -> bool:
@@ -184,6 +197,11 @@ def should_start_async(message: str, metadata: dict[str, Any], cfg: dict[str, An
     prefixes = ["/task", "/async", "/agent", "/ideas", "/goal", "/team"]
     if any(raw.startswith(p) for p in prefixes):
         return True
+    if bool(metadata.get("async_recommended")):
+        return True
+    compat_keywords = [str(item).strip().lower() for item in (cfg.get("compat_async_keywords") or []) if str(item).strip()]
+    if any(keyword and keyword in raw for keyword in compat_keywords):
+        return True
     if path == "/assistant/task":
         return True
     return False
@@ -193,12 +211,41 @@ def start_assistant_task(message: str, metadata: dict[str, Any], request_id: str
     q = require_task_queue()
     if not runtime or not q:
         raise RuntimeError("Runtime or Queue not initialized")
+    task_message = strip_async_prefix(message)
+    task_intent = str(metadata.get("intent") or "long_running_task")
+    if task_intent == "normal_chat" and metadata.get("async_recommended"):
+        task_intent = "long_running_task"
     
     # Brain/Hands mandate: Unified background task creation
     task = q.create({
-        "message": strip_async_prefix(message),
-        "intent": str(metadata.get("intent") or "long_running_task"),
-        "agent_name": str(metadata.get("agent_name") or "Hermes"),
+        "packet": {
+            "TASK": task_message,
+            "FILES": ["Current shared channel context"],
+            "ACTIONS": [
+                "Handle the user request through the assigned assistant persona.",
+                "Post the result back to the shared activity feed.",
+                "Report any errors clearly."
+            ],
+            "RESTRICTIONS": [
+                "Do not make unrelated changes.",
+                "Stop if the request is ambiguous or unsafe."
+            ],
+            "OUTPUT FORMAT": [
+                "1. You MUST actually perform the requested work using your tools (editing files, running commands, etc.).",
+                "2. Do not just output a plan. You are the executor.",
+                "3. Once the work is completely finished, structure your FINAL text response exactly like this:",
+                "A brief, personality-driven conversational message. DO NOT say 'Understood, I am operating as...' Just speak naturally as your persona.",
+                "---REPORT---",
+                "Detailed technical summary, files changed, diffs, errors, and unverified items."
+            ],
+            "STOP CONDITIONS": [
+                "Stop if required local context is unavailable.",
+                "Stop if execution fails."
+            ]
+        },
+        "message": task_message,
+        "intent": task_intent,
+        "agent_name": str(metadata.get("agent_name") or "Codex"),
     }, source="assistant-protocol", metadata=metadata)
     
     def runner(prompt: str, async_req_id: str, initial_agent: str) -> str:
@@ -211,14 +258,35 @@ def start_assistant_task(message: str, metadata: dict[str, Any], request_id: str
             # Build the Persona context
             profile_prompt = AGENT_PROFILES.get(current_agent, {}).get("system_prompt", "")
             
-            # Brain mandate: Inject Swarm Handoff instructions
+            # Brain mandate: Inject Swarm Handoff instructions and Roster
+            roster = ", ".join([f"{name} ({info.get('owns', 'general')})" for name, info in AGENT_PROFILES.items()])
             handoff_instructions = (
-                "TEAM COLLABORATION: If another agent is better suited for the next step, "
+                f"TEAM COLLABORATION: The following agents are available: {roster}. "
+                "If another agent is better suited for the next step, "
                 'hand off the task by outputting exactly: <handoff target="AgentName">Reason and instructions</handoff>.'
             )
-            full_message = f"[SYSTEM: {profile_prompt}\n{handoff_instructions}]\n\nUser: {current_prompt}"
             
-            res = runtime.chat(full_message, async_req_id, current_agent)
+            packet_str = ""
+            if "packet" in task:
+                packet_str = "\n\nTASK PACKET INSTRUCTIONS:\n" + "\n".join(
+                    f"{k}:\n" + "\n".join(f"- {v}" for v in (val if isinstance(val, list) else [val]))
+                    for k, val in task["packet"].items() if val
+                )
+            
+            # Combine instructions into the prompt. 
+            # CodexRuntime.chat will handle the primary persona wrapping.
+            cfg = BridgeState.cfg
+            backend = str(cfg.get("backend") or "").lower()
+            task_backend = str(cfg.get("task_executor_backend") or "").lower()
+            append_log("bridge.log", f"DEBUG: backend={backend}, task_backend={task_backend}")
+            
+            if "codex" in backend or "codex" in task_backend:
+                # For Codex, we prioritize the raw user request to trigger tool use directly
+                combined_prompt = f"TASK: {current_prompt}"
+            else:
+                combined_prompt = f"{handoff_instructions}{packet_str}\n\nUser request: {current_prompt}"
+            
+            res = runtime.chat(combined_prompt, async_req_id, current_agent)
             
             # Detect handoff
             match = re.search(r'<handoff target="([^"]+)">(.*?)</handoff>', res, re.IGNORECASE | re.DOTALL)
@@ -237,7 +305,11 @@ def start_assistant_task(message: str, metadata: dict[str, Any], request_id: str
             final_res = res
             break
             
-        record_activity("task", final_res or f"{task['task_id']} completed", source="agent", status="completed", request_id=request_id, task_id=task["task_id"])
+        chat_res = final_res
+        if "---REPORT---" in final_res:
+            chat_res = final_res.split("---REPORT---")[0].strip()
+            
+        record_activity("task", chat_res or f"{task['task_id']} completed", source="agent", status="completed", request_id=request_id, task_id=task["task_id"], agent_name=current_agent)
         return final_res
 
     q.start_background(task["task_id"], runner)
@@ -390,8 +462,11 @@ def task_queue_create_response(payload: dict[str, Any], request_id: str) -> dict
     source = str(payload.get("source") or "bridge")
     task = q.create(payload, source=source)
     if source == "chatgpt-mcp" and BridgeState.cfg.get("opencode_auto_run_chatgpt_tasks", True):
-        # schedule_opencode_auto_run(task["task_id"], request_id)
-        pass # Placeholder for simplicity in refactor
+        return schedule_approved_opencode_task(
+            task["task_id"],
+            {"executor": "chatgpt-mcp-auto"},
+            request_id,
+        )
     return queue_response(task=task, request_id=request_id)
 
 def task_queue_status_response(task_id: str, action: str, payload: dict[str, Any], request_id: str) -> dict[str, Any]:
@@ -541,7 +616,6 @@ def run_approved_opencode_task(task_id: str, payload: dict[str, Any], request_id
     return queue_response(task=task, request_id=request_id)
 
 def run_codex_task_capture(packet: dict[str, Any], cwd: Path, timeout: int, log_path: Path, request_id: str, step: int):
-    output_path = LOG_DIR / "tasks" / f"{request_id}_{step}_codex_last_message.txt"
     configured = str(BridgeState.cfg.get("codex_command") or "").strip()
     command = configured if configured else "codex"
     resolved = command_path(command)
@@ -550,10 +624,16 @@ def run_codex_task_capture(packet: dict[str, Any], cwd: Path, timeout: int, log_
     else:
         cmd = [str(resolved)]
     cmd.extend([
-        "exec",
-        "--cd", str(cwd),
         "--sandbox", str(BridgeState.cfg.get("codex_sandbox_mode") or "danger-full-access"),
-        "--output-last-message", str(output_path),
+        "--ask-for-approval", "never",
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--ignore-rules",
+        "--ignore-user-config",
+        "-c", "features.memory=false",
+        "-c", "features.hooks=false",
+        "--cd", str(cwd),
     ])
     model = str(BridgeState.cfg.get("codex_model") or "").strip()
     if model:
@@ -576,27 +656,55 @@ def run_codex_task_capture(packet: dict[str, Any], cwd: Path, timeout: int, log_
         proc = subprocess.run(
             cmd,
             cwd=str(cwd),
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
+            capture_output=True,
             text=True,
             timeout=int(BridgeState.cfg.get("codex_task_timeout_seconds") or timeout),
             creationflags=creationflags,
             startupinfo=startupinfo,
         )
+        
+        # Write full JSONL to log for diagnostics
+        log_file.write(proc.stdout or "")
+        log_file.write(proc.stderr or "")
 
-    raw_output = ""
-    if output_path.exists():
-        raw_output = output_path.read_text(encoding="utf-8", errors="replace").strip()
+    messages = []
+    tools_used = []
+    for line in (proc.stdout or "").splitlines():
+        if not line.strip().startswith("{"): continue
         try:
-            output_path.unlink()
+            evt = json.loads(line)
+            if evt.get("type") == "item.completed":
+                item = evt.get("item", {})
+                item_type = item.get("type")
+                if item_type == "agent_message" and item.get("text"):
+                    messages.append(item["text"])
+                elif item_type in {"tool_call", "file_change", "command_run", "command_execution", "git_action"}:
+                    details = ""
+                    if item_type == "file_change":
+                        changes = item.get("changes", [])
+                        details = ", ".join([f"{c.get('kind', 'edit')} {Path(c.get('path', 'unknown')).name}" for c in changes])
+                    elif item_type in {"command_run", "command_execution"}:
+                        details = item.get("command", "unknown command")
+                    
+                    label = item_type.replace("_", " ").title()
+                    if details:
+                        tools_used.append(f"{label}: {details}")
+                    else:
+                        tools_used.append(f"{label} completed.")
         except Exception:
-            pass
-    log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    if raw_output:
-        log_path.write_text(f"{log_text}\n\n--- Codex final message ---\n{raw_output}\n", encoding="utf-8")
-    else:
-        raw_output = log_text
-    return proc, raw_output
+            continue
+    
+    final_res = "\n\n".join(messages).strip()
+    if tools_used and final_res:
+        final_res += "\n\n---\n" + "\n".join(tools_used)
+    elif tools_used and not final_res:
+        final_res = "\n".join(tools_used)
+    
+    if not final_res:
+        final_res = strip_ansi(proc.stdout or "").strip()
+        
+    return proc, final_res
+
 
 
 def rollback_task_response(task_id: str, request_id: str) -> dict[str, Any]:
@@ -625,8 +733,14 @@ def run_server(cfg: dict[str, Any]) -> int:
     ensure_dirs()
     BridgeState.cfg = cfg
     BridgeState.task_queue = DurableTaskQueue(ROOT / "task_queue")
+    from runtime import HermesPersistentRuntime, CodexRuntime, OpenCodeRuntime
     backend = str(cfg.get("backend") or "codex").lower()
-    BridgeState.runtime = HermesPersistentRuntime(cfg) if backend == "hermes" else CodexRuntime(cfg)
+    if backend == "hermes":
+        BridgeState.runtime = HermesPersistentRuntime(cfg)
+    elif backend == "opencode":
+        BridgeState.runtime = OpenCodeRuntime(cfg)
+    else:
+        BridgeState.runtime = CodexRuntime(cfg)
 
     
     host = cfg.get("host", "127.0.0.1")
@@ -655,6 +769,14 @@ def main() -> int:
     parser.add_argument("--config", default=str(CONFIG_PATH))
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    
+    # Register signal handlers in the main thread
+    try:
+        signal.signal(signal.SIGINT, handle_exit_signal)
+        signal.signal(signal.SIGTERM, handle_exit_signal)
+    except ValueError:
+        pass # Not in main thread (e.g. during re-exec)
+
     cfg = load_config()
     if not args.self_test and reexec_with_configured_python(cfg, args.config):
         return 0

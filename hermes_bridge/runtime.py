@@ -55,10 +55,8 @@ class CodexRuntime:
             self.turn_count += 1
             turn_no = self.turn_count
             started = time.time()
-            persona = AGENT_PROFILES.get(agent_name, {}).get("system_prompt", "")
+            # Raw user prompt injection - no system wrappers, no persona instructions.
             prompt = message
-            if persona and agent_name not in {"Codex", "Hermes"}:
-                prompt = f"[Role context: {persona}]\n\nUser: {message}"
 
             output_path = Path(tempfile.gettempdir()) / f"dev_deck_codex_{request_id}.txt"
             cwd = (
@@ -70,11 +68,23 @@ class CodexRuntime:
             timeout = int(self.cfg.get("codex_timeout_seconds") or 120)
             args = [
                 *self._base_command(),
-                "exec",
-                "--cd", str(cwd),
                 "--sandbox", str(self.cfg.get("codex_sandbox_mode") or "danger-full-access"),
-                "--output-last-message", str(output_path),
+                "--ask-for-approval", "never",
+                "-c", "features.personality=false",
             ]
+            if self.cfg.get("codex_use_oss"):
+                args.extend(["--oss", "--local-provider", str(self.cfg.get("codex_local_provider") or "lmstudio")])
+            
+            args.extend([
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-rules",
+                "--ignore-user-config",
+                "-c", "features.memory=false",
+                "-c", "features.hooks=false",
+                "--cd", str(cwd),
+            ])
             model = str(self.cfg.get("codex_model") or "").strip()
             if model:
                 args.extend(["--model", model])
@@ -99,18 +109,48 @@ class CodexRuntime:
                     creationflags=creationflags,
                     startupinfo=startupinfo,
                 )
-                response = ""
-                if output_path.exists():
-                    response = output_path.read_text(encoding="utf-8", errors="replace").strip()
+                
+                messages = []
+                tools_used = []
+                for line in (proc.stdout or "").splitlines():
+                    if not line.strip().startswith("{"): continue
                     try:
-                        output_path.unlink()
+                        evt = json.loads(line)
+                        if evt.get("type") == "item.completed":
+                            item = evt.get("item", {})
+                            item_type = item.get("type")
+                            if item_type == "agent_message" and item.get("text"):
+                                messages.append(item["text"])
+                            elif item_type in {"tool_call", "file_change", "command_run", "command_execution", "git_action"}:
+                                details = ""
+                                if item_type == "file_change":
+                                    changes = item.get("changes", [])
+                                    details = ", ".join([f"{c.get('kind', 'edit')} {Path(c.get('path', 'unknown')).name}" for c in changes])
+                                elif item_type in {"command_run", "command_execution"}:
+                                    details = item.get("command", "unknown command")
+                                
+                                label = item_type.replace("_", " ").title()
+                                if details:
+                                    tools_used.append(f"{label}: {details}")
+                                else:
+                                    tools_used.append(f"{label} completed.")
                     except Exception:
-                        pass
+                        continue
+                
+                response = "\n\n".join(messages).strip()
+                if tools_used and response:
+                    response += "\n\n---\n" + "\n".join(tools_used)
+                elif tools_used and not response:
+                    response = "\n".join(tools_used)
+                
                 if not response:
-                    response = strip_ansi((proc.stdout or "").strip())
-                if proc.returncode != 0:
+                    # Fallback to last line of stdout if no JSON messages found
+                    response = strip_ansi((proc.stdout or "").strip().splitlines()[-1] if proc.stdout else "").strip()
+                
+                if proc.returncode != 0 and not response:
                     detail = strip_ansi((proc.stderr or proc.stdout or f"Codex exited {proc.returncode}").strip())
                     raise RuntimeError(detail)
+                
                 elapsed = time.time() - started
                 self._write_turn_log(request_id, turn_no, message, response, proc.stdout or "", elapsed, None)
                 write_status(mode="codex_cli", ready=True, busy=False, last_request_id=request_id, last_elapsed_seconds=round(elapsed, 3), turns=turn_no)
@@ -128,8 +168,113 @@ class CodexRuntime:
             "turn": turn_no,
             "started_at": now_iso(),
             "elapsed_seconds": round(elapsed, 3),
-            "message_preview": message[:1000],
-            "response_preview": response[:2000],
+            "message_preview": message[:4000],
+            "response_preview": response[:4000],
+            "error": repr(exc) if exc else None,
+            "captured_output": truncate(strip_ansi(captured or ""), int(self.cfg.get("log_max_chars_per_turn") or 200000)),
+        }
+        (TURN_LOG_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{request_id}.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+class OpenCodeRuntime:
+    """OpenCode CLI runtime used for local execution."""
+
+    def __init__(self, cfg: dict[str, Any]):
+        self.cfg = cfg
+        self.lock = threading.Lock()
+        self.ready = bool(shutil.which(str(cfg.get("opencode_command") or "opencode")))
+        self.init_error = None if self.ready else "OpenCode command not found"
+        self.turn_count = 0
+        if self.ready:
+            write_status(mode="opencode", ready=True)
+        else:
+            append_log("bridge.log", self.init_error or "OpenCode command not found")
+
+    def chat(self, message: str, request_id: str, agent_name: str = "Codex") -> str:
+        if not self.ready:
+            raise RuntimeError(self.init_error or "OpenCode runtime is not ready")
+        with self.lock:
+            self.turn_count += 1
+            turn_no = self.turn_count
+            started = time.time()
+            
+            persona = AGENT_PROFILES.get(agent_name, {}).get("system_prompt", "")
+            prompt = message
+            if persona:
+                prompt = f"[Role context: {persona}]\n\nUser: {message}"
+
+            cwd = (
+                expand_path(self.cfg.get("opencode_working_directory"), ROOT.parent)
+                or expand_path(self.cfg.get("working_directory"), ROOT.parent)
+                or ROOT.parent
+            )
+            timeout = int(self.cfg.get("opencode_timeout_seconds") or 600)
+            
+            cmd = [
+                str(self.cfg.get("opencode_command") or "opencode"),
+                "run",
+                prompt,
+                "--format", "json",
+                "--print-logs"
+            ]
+            model = str(self.cfg.get("opencode_model") or "").strip()
+            if model:
+                cmd.extend(["--model", model])
+            
+            if self.cfg.get("opencode_skip_permissions_after_approval", True):
+                cmd.append("--dangerously-skip-permissions")
+
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            startupinfo = None
+            if os.name == "nt":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(cwd),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    creationflags=creationflags,
+                    startupinfo=startupinfo,
+                )
+                
+                raw_stdout = proc.stdout or ""
+                raw_stderr = proc.stderr or ""
+                
+                # Import inside method to avoid circularity if possible, or use simple extraction
+                try:
+                    from runners import extract_opencode_text
+                    response = extract_opencode_text(raw_stdout, raw_stderr)
+                except Exception:
+                    response = raw_stdout.strip()
+                
+                if proc.returncode != 0 and not response:
+                    detail = strip_ansi((proc.stderr or proc.stdout or f"OpenCode exited {proc.returncode}").strip())
+                    raise RuntimeError(detail)
+                
+                elapsed = time.time() - started
+                self._write_turn_log(request_id, turn_no, message, response, raw_stdout + "\n" + raw_stderr, elapsed, None)
+                write_status(mode="opencode", ready=True, busy=False, last_request_id=request_id, last_elapsed_seconds=round(elapsed, 3), turns=turn_no)
+                return response
+            except Exception as exc:
+                elapsed = time.time() - started
+                self._write_turn_log(request_id, turn_no, message, "", "", elapsed, exc)
+                raise
+
+    def _write_turn_log(self, request_id: str, turn_no: int, message: str, response: str, captured: str, elapsed: float, exc: Exception | None) -> None:
+        TURN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "backend": "opencode",
+            "request_id": request_id,
+            "turn": turn_no,
+            "started_at": now_iso(),
+            "elapsed_seconds": round(elapsed, 3),
+            "message_preview": message[:4000],
+            "response_preview": response[:4000],
             "error": repr(exc) if exc else None,
             "captured_output": truncate(strip_ansi(captured or ""), int(self.cfg.get("log_max_chars_per_turn") or 200000)),
         }
@@ -280,8 +425,8 @@ class HermesPersistentRuntime:
             "turn": turn_no,
             "started_at": now_iso(),
             "elapsed_seconds": round(elapsed, 3),
-            "message_preview": message[:1000],
-            "response_preview": response[:2000],
+            "message_preview": message[:4000],
+            "response_preview": response[:4000],
             "error": repr(exc) if exc else None,
             "captured_output": truncate(captured, max_chars),
         }

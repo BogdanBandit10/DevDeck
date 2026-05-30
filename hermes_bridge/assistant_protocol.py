@@ -69,7 +69,7 @@ AGENT_PROFILES: dict[str, dict[str, str]] = {
         "quip": "Warming up the tiny forge.",
         "owns": "implementation, file edits, running commands, and turning plans into working code",
         "hands_off_to": "Mike for refactor, Shield for review, or Relay for user-facing summary",
-        "system_prompt": "You are Forge, the implementation specialist. You turn plans into working code, run commands carefully, and report what changed. You hand rough working code to Mike for cleanup and Shield for review."
+        "system_prompt": "You are Forge, the implementation specialist. IMPORTANT: When you receive a task packet, PERFORM THE WORK IMMEDIATELY using your tools. Do not start your response with 'Understood' or 'I will'. Do not provide a plan. Execute the actions and then provide the ---REPORT---. If you are asked to create a file, use your file tools to create it before responding."
     },
     "Mike": {
         "role": "refactor_head",
@@ -122,27 +122,44 @@ AGENT_PROFILES: dict[str, dict[str, str]] = {
         "hands_off_to": "the specialist whose lane best matches the work",
         "system_prompt": "You are Hermes, the lead coordinator. You delegate by lane, keep agents aligned, and produce concise final synthesis."
     },
+    "Assistant": {
+        "role": "primary_assistant",
+        "animation": "speaking",
+        "mood": "ready",
+        "quip": "Online.",
+        "owns": "complex reasoning, repo-wide investigations, and high-context problem solving",
+        "hands_off_to": "Forge for surgical implementation or Shield for review",
+        "system_prompt": "You are the primary Dev Deck Assistant, an execution engine. You possess full access to system tools. YOUR PRIMARY MANDATE IS ACTION. Do not provide conversational filler, do not plan aloud, and do not acknowledge tasks with phrases like 'Understood'. When a task is assigned, execute the necessary tools IMMEDIATELY. Only respond with the output of your actions, or the final report once the work is complete in the required ---REPORT--- format."
+    },
 }
 
-INTENT_RULES: list[tuple[str, str, str, list[str], bool]] = [
-    ("code_review", "Shield", "reviewing", ["code review", "review this repo", "security review", "audit", "vulnerability", "scan code"], True),
-    ("assembly_line", "Atlas", "thinking", ["/team", "/assembly", "team task", "assembly line"], True),
-    ("project_goal", "Atlas", "thinking", ["/goal", "/brainstorm", "new project"], True),
-    ("refactor_code", "Mike", "working", ["refactor", "clean code", "professional", "dead weight", "clean up"], True),
-    ("github_task", "Vector", "working", ["github", "pull request", " pr ", "commit", "push", "branch", "merge", "issue"], True),
-    ("ui_ux_design", "Muse", "designing", ["ui", "ux", "design", "layout", "visual", "polish", "style", "responsive", "accessibility", "frontend", "interface", "button", "dashboard", "screen", "popup", "toast"], True),
-    ("file_task", "Forge", "working", ["edit file", "write file", "create file", "modify file", "open folder", "summarize folder", "search files"], True),
-    ("repo_scout", "Scout", "searching", ["scout", "map repo", "file map", "similar projects", "agent ideas"], True),
-    ("web_research", "Beacon", "searching", ["/ideas", "research", "look up", "web search", "search web", "latest", "news", "find online"], True),
-    ("system_control", "Forge", "system", ["open app", "close app", "restart", "shutdown", "task manager", "process", "port "], True),
-    ("planning", "Atlas", "thinking", ["make a plan", "write a plan", "plan out", "roadmap", "phase"], False),
-    ("long_running_task", "Forge", "working", ["big task", "long task", "do this whole", "implement", "build", "fix all", "set up", "agent ui", "coding a game", "game ui", "simple script"], True),
-]
+INTENT_RULES: list[tuple[str, str, str, list[str], bool]] = []
 
 FORCE_ASYNC_PREFIXES = ("/task ", "/async ", "/agent ", "/ideas ")
 STATUS_PREFIXES = ("/tasks", "task status", "status tasks", "show tasks")
 AGENT_LIST_PREFIXES = ("/agents", "show agents", "list agents", "who can help")
 PRESET_LIST_PREFIXES = ("/presets", "/help", "help", "show presets", "quick actions")
+
+TASK_REQUEST_VERBS = (
+    "build",
+    "create",
+    "debug",
+    "edit",
+    "fix",
+    "implement",
+    "install",
+    "make",
+    "modify",
+    "move",
+    "remove",
+    "rename",
+    "refactor",
+    "review",
+    "set up",
+    "setup",
+    "update",
+    "write",
+)
 
 PRESET_ACTIONS: list[dict[str, Any]] = [
     {
@@ -212,6 +229,7 @@ def classify_intent(message: str) -> dict[str, Any]:
     raw = message or ""
     text = normalize_text(raw)
     force_async = any(text.startswith(prefix.strip()) or raw.lower().strip().startswith(prefix) for prefix in FORCE_ASYNC_PREFIXES)
+    
     if text in STATUS_PREFIXES or any(text.startswith(prefix) for prefix in STATUS_PREFIXES):
         return build_metadata("task_status", "Hermes", "status", async_recommended=False)
     if text in AGENT_LIST_PREFIXES or any(text.startswith(prefix) for prefix in AGENT_LIST_PREFIXES):
@@ -219,19 +237,20 @@ def classify_intent(message: str) -> dict[str, Any]:
     if text in PRESET_LIST_PREFIXES or any(text.startswith(prefix) for prefix in PRESET_LIST_PREFIXES):
         return build_metadata("preset_directory", "Hermes", "status", async_recommended=False)
 
-    for intent, agent, animation, keywords, async_default in INTENT_RULES:
-        if any(keyword.strip() in text for keyword in keywords):
-            return build_metadata(intent, agent, animation, async_recommended=force_async or async_default)
+    # Everything else goes to Codex as the central orchestrator
+    # If the user mentioned a specific agent, we can still catch that as a hint
+    for agent_name in AGENT_PROFILES:
+        lower_name = agent_name.lower()
+        if f" {lower_name} " in f" {text} " or text.startswith(f"{lower_name} "):
+            return build_metadata("directed_task", agent_name, "working", async_recommended=force_async or True)
 
-    # Very long requests often benefit from async handling even if no keyword matched.
-    if len(raw) > 700:
-        return build_metadata("long_running_task", "Forge", "working", async_recommended=True)
-
-    return build_metadata("normal_chat", "Relay", "idle_talk", async_recommended=force_async)
+    # Default to Assistant for autonomous routing
+    is_likely_task = any(verb in text for verb in TASK_REQUEST_VERBS) or force_async or len(raw) > 100
+    return build_metadata("directed_task" if is_likely_task else "normal_chat", "Assistant", "working" if is_likely_task else "idle_talk", async_recommended=force_async or is_likely_task)
 
 
 def build_metadata(intent: str, agent_name: str, animation: str | None = None, async_recommended: bool = False) -> dict[str, Any]:
-    profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["Hermes"])
+    profile = AGENT_PROFILES.get(agent_name, {"role": "primary_assistant", "mood": "ready", "quip": "Codex is ready."})
     return {
         "mode": intent,
         "intent": intent,
