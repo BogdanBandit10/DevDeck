@@ -33,11 +33,13 @@ The default port can be overridden by `hermes_bridge/config.json`.
 - `dev_deck_launcher.py` - launcher source.
 - `hermes_bridge/` - bridge server, config, assets, status, and logs.
 - `hermes_bridge/assets/` - Big Window frontend assets.
+- `connector/` - ChatGPT-facing MCP facade for queue tools.
 - `hermes_bridge/logs/` - runtime logs and task records.
 - `opencode.json` - OpenCode provider config for LM Studio at `http://127.0.0.1:1234/v1`.
 - `README_DEV_DECK.md` - existing short project README.
 - `OPENCODE_TEST.md` - prior OpenCode inspection notes.
 - `docs/BRAWN_WORKFLOW.md` - workflow for ChatGPT planning and OpenCode execution.
+- `docs/CHATGPT_CONNECTOR_SETUP.md` - setup for the MCP facade and ngrok tunnel.
 
 ## Known Risks
 
@@ -53,5 +55,6 @@ The default port can be overridden by `hermes_bridge/config.json`.
 - Brawn agent: OpenCode.
 - Local model: `qwen3.5-9b-mtp` through LM Studio.
 - LM Studio API base URL: `http://127.0.0.1:1234/v1`.
+- ChatGPT connector facade: `npm run connector`, default `http://127.0.0.1:3000/mcp`.
 - Planner/reviewer: ChatGPT.
-- Executor role: OpenCode/local model handles narrow file reads, small edits, command runs, and reports results back.
+- Executor role: OpenCode/local model handles narrow file reads, small edits, command runs, and reports results back after local approval.

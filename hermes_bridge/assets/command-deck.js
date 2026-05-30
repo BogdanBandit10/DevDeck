@@ -39,6 +39,46 @@ const metricSuccess = document.querySelector("#metricSuccess");
 const metricEvents = document.querySelector("#metricEvents");
 const crewSignals = document.querySelector("#crewSignals");
 const signalCount = document.querySelector("#signalCount");
+const connectorBadge = document.querySelector("#connectorBadge");
+const connectorMcp = document.querySelector("#connectorMcp");
+const connectorTunnel = document.querySelector("#connectorTunnel");
+const connectorPublic = document.querySelector("#connectorPublic");
+const connectorUrl = document.querySelector("#connectorUrl");
+const copyConnectorUrl = document.querySelector("#copyConnectorUrl");
+const runnerBadge = document.querySelector("#runnerBadge");
+const runnerServer = document.querySelector("#runnerServer");
+const runnerModel = document.querySelector("#runnerModel");
+const runnerOpenCode = document.querySelector("#runnerOpenCode");
+const bootRunner = document.querySelector("#bootRunner");
+const toggleAutoRun = document.querySelector("#toggleAutoRun");
+
+const boardClearDone = document.querySelector("#boardClearDone");
+const queueClearDone = document.querySelector("#queueClearDone");
+
+async function clearTerminalTasks() {
+  const confirmed = await themedConfirm({
+    title: "Clear terminal tasks",
+    message: "Delete completed, failed, and rejected tasks from the durable queue.",
+    confirmText: "Clear",
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    const res = await fetch("/task-queue/clear", { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Cleared ${data.cleared} terminal tasks.`);
+      await loadQueueTasks();
+    } else {
+      showToast(data.error || "Failed to clear tasks", true);
+    }
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+if (boardClearDone) boardClearDone.addEventListener("click", clearTerminalTasks);
+if (queueClearDone) queueClearDone.addEventListener("click", clearTerminalTasks);
 
 const seen = new Set();
 let selectedTaskId = null;
@@ -47,7 +87,71 @@ let selectedTask = null;
 let selectedQueueTaskId = null;
 let queueTasks = [];
 let queueBusy = false;
+let queueActionBusy = false;
 let dots = [];
+let currentConnectorUrl = "";
+let currentAutoRunEnabled = false;
+
+function themedConfirm({ title = "Confirm action", message = "", confirmText = "Confirm", cancelText = "Cancel", danger = false } = {}) {
+  return new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirmOverlay";
+    overlay.setAttribute("role", "presentation");
+
+    const dialog = document.createElement("section");
+    dialog.className = `confirmDialog ${danger ? "isDanger" : ""}`;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "confirmTitle");
+
+    const eyebrow = document.createElement("span");
+    eyebrow.className = "confirmEyebrow";
+    eyebrow.textContent = danger ? "Destructive action" : "Local approval";
+
+    const heading = document.createElement("h2");
+    heading.id = "confirmTitle";
+    heading.textContent = title;
+
+    const body = document.createElement("p");
+    body.textContent = message;
+
+    const actions = document.createElement("div");
+    actions.className = "confirmActions";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = cancelText;
+
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = danger ? "dangerAction" : "primaryAction";
+    confirm.textContent = confirmText;
+
+    function close(value) {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+      resolve(value);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") close(false);
+      if (event.key === "Enter") close(true);
+    }
+
+    cancel.addEventListener("click", () => close(false));
+    confirm.addEventListener("click", () => close(true));
+    overlay.addEventListener("click", event => {
+      if (event.target === overlay) close(false);
+    });
+    document.addEventListener("keydown", onKeyDown);
+
+    actions.append(cancel, confirm);
+    dialog.append(eyebrow, heading, body, actions);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    confirm.focus();
+  });
+}
 
 const laneDefs = [
   ["queued", "Queued", "Waiting for an agent claim."],
@@ -71,6 +175,8 @@ const queueStatuses = [
   ["failed", "Failed", "Stopped with an error or restart recovery."]
 ];
 
+const queueExecutor = "manual-ui";
+
 const packetTemplate = {
   TASK: "One concise objective.",
   FILES: ["Exact file or folder path"],
@@ -78,6 +184,28 @@ const packetTemplate = {
   RESTRICTIONS: ["Do not modify source unless explicitly allowed.", "Do not touch Dev Deck.exe.", "Stop if instructions are ambiguous."],
   "OUTPUT FORMAT": ["Files read:", "Commands run:", "Files changed:", "Diff or summary:", "Errors/unverified:"],
   "STOP CONDITIONS": ["Stop if required files are missing.", "Stop if the task needs broader scope."]
+};
+
+const resultTemplate = {
+  summary: "",
+  files_read: [],
+  commands_run: [],
+  files_changed: [],
+  pre_existing_dirty: [],
+  diff: "",
+  errors: "",
+  unverified: ""
+};
+
+const resultFields = {
+  summary: "string",
+  files_read: "array",
+  commands_run: "array",
+  files_changed: "array",
+  pre_existing_dirty: "array",
+  diff: "string",
+  errors: "string",
+  unverified: "string"
 };
 
 function short(text, n = 170) {
@@ -210,6 +338,7 @@ function renderAgents(agents) {
 }
 
 function renderBoard(tasks) {
+  window.lastBoardData = tasks || [];
   if (selectedTaskId) {
     selectedTask = (tasks || []).find(t => t.task_id === selectedTaskId) || selectedTask;
     renderDetails(selectedTask, "task");
@@ -277,17 +406,327 @@ function formatQueueList(value) {
 }
 
 function appendQueueField(parent, label, value, className = "") {
+  const isLarge = value && (Array.isArray(value) ? value.length > 3 : String(value).length > 200);
   const field = document.createElement("section");
   field.className = `queueField ${className}`.trim();
-  const title = document.createElement("strong");
-  const body = document.createElement("pre");
-  title.textContent = label;
-  body.textContent = formatQueueList(value) || "None";
-  field.append(title, body);
+  
+  if (isLarge) {
+    const toggle = document.createElement("button");
+    toggle.className = "queueFieldToggle";
+    toggle.textContent = label;
+    
+    const body = document.createElement("pre");
+    body.className = "queueFieldContent";
+    body.textContent = formatQueueList(value) || "None";
+    
+    toggle.addEventListener("click", () => {
+      toggle.classList.toggle("isCollapsed");
+      body.classList.toggle("isCollapsed");
+    });
+    
+    field.append(toggle, body);
+  } else {
+    const title = document.createElement("strong");
+    const body = document.createElement("pre");
+    title.textContent = label;
+    body.textContent = formatQueueList(value) || "None";
+    field.append(title, body);
+  }
   parent.append(field);
 }
 
+// TOAST NOTIFICATIONS
+let toastContainer = null;
+function showToast(message, isError = false) {
+  if (!toastContainer) {
+    toastContainer = document.createElement("div");
+    toastContainer.className = "toastContainer";
+    document.body.appendChild(toastContainer);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast ${isError ? "isError" : "isSuccess"}`;
+  toast.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${isError ? 'M18 6L6 18M6 6l12 12' : 'M20 6L9 17l-5-5'}"/></svg> <span>${short(message, 100)}</span>`;
+  toastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add("fadeOut");
+    toast.addEventListener("animationend", () => toast.remove());
+  }, 3500);
+}
+
+// Override old status functions to use toasts
+function queueActionStatus(message, isError = false) {
+  if (queueCreateStatus && document.querySelector(".view-queue")) {
+    queueCreateStatus.textContent = message;
+    queueCreateStatus.style.color = isError ? "var(--red)" : "var(--muted)";
+  }
+  if (message && message !== "Waiting for an agent claim." && message !== "Rolling back changes...") {
+    showToast(message, isError);
+  }
+}
+
+function queueResultStatus(message, isError = false) {
+  const el = document.querySelector("#queueResultStatus");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle("isError", Boolean(isError));
+}
+
+function setQueueActionBusy(busy) {
+  queueActionBusy = Boolean(busy);
+  document.querySelectorAll(".queueActionBar button, .queueResultTools button, .queueActionBar textarea, #queueResultInput").forEach(control => {
+    control.disabled = queueActionBusy;
+  });
+}
+
+function queueActionPaintFrame() {
+  return new Promise(resolve => requestAnimationFrame(resolve));
+}
+
+function queueResultFromTextarea() {
+  const textarea = document.querySelector("#queueResultInput");
+  if (!textarea) return null;
+  const raw = textarea.value.trim();
+  if (!raw) return null;
+  const parsed = JSON.parse(raw);
+  return parsed && typeof parsed === "object" && parsed.result && typeof parsed.result === "object"
+    ? parsed.result
+    : parsed;
+}
+
+function validateQueueResult(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return "Result must be a JSON object.";
+  }
+  for (const [field, type] of Object.entries(resultFields)) {
+    if (!(field in result)) return `Missing result field: ${field}`;
+    if (type === "array" && !Array.isArray(result[field])) return `${field} must be an array.`;
+    if (type === "string" && typeof result[field] !== "string") return `${field} must be a string.`;
+  }
+  return "";
+}
+
+function isEmptyOrTemplateResult(result) {
+  if (!result || typeof result !== "object") return true;
+  return JSON.stringify(result) === JSON.stringify(resultTemplate);
+}
+
+async function queuePost(taskId, action, body = {}) {
+  const res = await fetch(`/task-queue/tasks/${encodeURIComponent(taskId)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ executor: queueExecutor, ...body })
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) throw new Error(data.error || data.message || `Queue ${action} failed`);
+  return data.task || data;
+}
+
+async function copyQueuePacket(taskId) {
+  if (queueActionBusy) return;
+  setQueueActionBusy(true);
+  try {
+    const res = await fetch(`/task-queue/tasks/${encodeURIComponent(taskId)}/packet`, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || data.message || "Could not load packet");
+    const text = JSON.stringify(data.packet || {}, null, 2);
+    await navigator.clipboard.writeText(text);
+    queueActionStatus("Packet copied.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+async function claimQueueTask(taskId) {
+  if (queueActionBusy) return;
+  setQueueActionBusy(true);
+  try {
+    queueActionStatus("Claiming task...");
+    await queueActionPaintFrame();
+    await queuePost(taskId, "claim", { note: "Manual UI claim." });
+    await loadQueueTask(taskId);
+    queueActionStatus("Task claimed.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+async function approveRunQueueTask(taskId) {
+  if (queueActionBusy) return;
+  const confirmed = await themedConfirm({
+    title: "Allow OpenCode run",
+    message: "Approve local OpenCode execution for this task. OpenCode may edit files named in the packet.",
+    confirmText: "Allow Run"
+  });
+  if (!confirmed) {
+    queueActionStatus("OpenCode run cancelled.");
+    return;
+  }
+  setQueueActionBusy(true);
+  try {
+    queueActionStatus("Running OpenCode locally...");
+    await queueActionPaintFrame();
+    await queuePost(taskId, "approve-run", { note: "Approved from Dev Deck UI." });
+    await loadQueueTask(taskId);
+    queueActionStatus("OpenCode run finished.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+    await loadQueueTask(taskId);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+async function rollbackQueueTask(taskId) {
+  if (queueActionBusy) return;
+  const confirmed = await themedConfirm({
+    title: "Rollback task changes",
+    message: "Only files touched by this task will be reverted.",
+    confirmText: "Rollback",
+    danger: true
+  });
+  if (!confirmed) {
+    return;
+  }
+  setQueueActionBusy(true);
+  try {
+    queueActionStatus("Rolling back changes...");
+    await queuePost(taskId, "rollback");
+    await loadQueueTask(taskId);
+    queueActionStatus("Rollback completed.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+async function submitQueueResult(taskId) {
+  if (queueActionBusy) return;
+  try {
+    const result = queueResultFromTextarea();
+    if (!result) throw new Error("Result JSON is required.");
+    const validation = validateQueueResult(result);
+    if (validation) {
+      queueResultStatus(validation, true);
+      throw new Error(validation);
+    }
+    queueResultStatus("Result JSON is valid.");
+    setQueueActionBusy(true);
+    queueActionStatus("Submitting result...");
+    await queuePost(taskId, "result", { result });
+    await loadQueueTask(taskId);
+    queueActionStatus("Result submitted.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+async function completeQueueTask(taskId) {
+  if (queueActionBusy) return;
+  try {
+    let result = null;
+    const textarea = document.querySelector("#queueResultInput");
+    if (textarea && textarea.value.trim()) {
+      result = queueResultFromTextarea();
+      const validation = validateQueueResult(result);
+      if (validation) {
+        queueResultStatus(validation, true);
+        throw new Error(validation);
+      }
+      if (isEmptyOrTemplateResult(result) && !(await themedConfirm({
+        title: "Complete with template result",
+        message: "The result JSON is empty or unchanged from the template.",
+        confirmText: "Continue"
+      }))) {
+        queueActionStatus("Complete cancelled.");
+        return;
+      }
+    } else if (!(await themedConfirm({
+      title: "Complete without result",
+      message: "No result JSON is present for this task.",
+      confirmText: "Continue"
+    }))) {
+      queueActionStatus("Complete cancelled.");
+      return;
+    }
+    if (!(await themedConfirm({
+      title: "Mark task completed",
+      message: "This will mark the selected task completed.",
+      confirmText: "Complete Task"
+    }))) {
+      queueActionStatus("Complete cancelled.");
+      return;
+    }
+    setQueueActionBusy(true);
+    queueActionStatus("Completing task...");
+    await queuePost(taskId, "complete", result ? { result } : {});
+    await loadQueueTask(taskId);
+    queueActionStatus("Task completed.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+async function failQueueTask(taskId) {
+  if (queueActionBusy) return;
+  const reasonInput = document.querySelector("#queueFailReason");
+  const errorText = reasonInput ? reasonInput.value : "";
+  if (!errorText || !errorText.trim()) {
+    queueActionStatus("Failure reason is required.", true);
+    return;
+  }
+  try {
+    let result = null;
+    const textarea = document.querySelector("#queueResultInput");
+    if (textarea && textarea.value.trim()) {
+      result = queueResultFromTextarea();
+      const validation = validateQueueResult(result);
+      if (validation) {
+        queueResultStatus(validation, true);
+        throw new Error(validation);
+      }
+    }
+    setQueueActionBusy(true);
+    queueActionStatus("Failing task...");
+    await queueActionPaintFrame();
+    await queuePost(taskId, "fail", { error: errorText.trim(), ...(result ? { result } : {}) });
+    await loadQueueTask(taskId);
+    queueActionStatus("Task failed.");
+  } catch (error) {
+    queueActionStatus(error.message, true);
+  } finally {
+    setQueueActionBusy(false);
+  }
+}
+
+let logPollInterval = null;
+
+async function pollTaskLog(taskId) {
+  const el = document.querySelector("#liveTaskLog");
+  if (!el) return;
+  try {
+    const res = await fetch(`/task-queue/tasks/${encodeURIComponent(taskId)}/log`, { cache: "no-store" });
+    const data = await res.json();
+    if (data.ok && data.log_tail) {
+      el.textContent = data.log_tail;
+      el.scrollTop = el.scrollHeight;
+    }
+  } catch (e) {}
+}
+
 function renderQueueDetails(task) {
+  if (logPollInterval) {
+    clearInterval(logPollInterval);
+    logPollInterval = null;
+  }
   if (!queueDetail) return;
   if (!task) {
     queueDetail.replaceChildren(Object.assign(document.createElement("div"), {
@@ -298,6 +737,8 @@ function renderQueueDetails(task) {
   }
   const packet = task.packet || {};
   const result = task.result || {};
+  const isPending = task.status === "pending";
+  const isRunning = task.status === "running";
   const wrap = document.createElement("div");
   wrap.className = "queueDetailBody";
 
@@ -308,6 +749,86 @@ function renderQueueDetails(task) {
   title.textContent = queueTaskTitle(task, 160);
   meta.textContent = `${task.task_id || "task"} / ${task.status || "unknown"} / updated ${task.updated_at || "unknown"}`;
   head.append(title, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "queueActionBar";
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy Packet";
+  copyButton.addEventListener("click", () => copyQueuePacket(task.task_id));
+  actions.append(copyButton);
+  if (isPending) {
+    const claimButton = document.createElement("button");
+    claimButton.type = "button";
+    claimButton.textContent = "Claim Task";
+    claimButton.addEventListener("click", () => claimQueueTask(task.task_id));
+    const approveRunButton = document.createElement("button");
+    approveRunButton.type = "button";
+    approveRunButton.className = "primaryAction";
+    approveRunButton.textContent = "Approve & Run";
+    approveRunButton.addEventListener("click", () => approveRunQueueTask(task.task_id));
+    actions.append(claimButton, approveRunButton);
+  }
+  if (isRunning) {
+    const approveRunButton = document.createElement("button");
+    approveRunButton.type = "button";
+    approveRunButton.className = "primaryAction";
+    approveRunButton.textContent = "Run OpenCode";
+    approveRunButton.addEventListener("click", () => approveRunQueueTask(task.task_id));
+    const submitButton = document.createElement("button");
+    submitButton.type = "button";
+    submitButton.textContent = "Submit Result";
+    submitButton.addEventListener("click", () => submitQueueResult(task.task_id));
+    const completeButton = document.createElement("button");
+    completeButton.type = "button";
+    completeButton.textContent = "Complete Task";
+    completeButton.addEventListener("click", () => completeQueueTask(task.task_id));
+    const rollbackButton = document.createElement("button");
+    rollbackButton.type = "button";
+    rollbackButton.className = "dangerAction";
+    rollbackButton.textContent = "Rollback Changes";
+    rollbackButton.addEventListener("click", () => rollbackQueueTask(task.task_id));
+    actions.append(approveRunButton, submitButton, completeButton, rollbackButton);
+  }
+  const canRollback = result.files_changed && result.files_changed.length > 0;
+  if (canRollback) {
+    const rollbackButton = document.createElement("button");
+    rollbackButton.type = "button";
+    rollbackButton.className = "dangerAction";
+    rollbackButton.textContent = "Rollback These Changes";
+    rollbackButton.addEventListener("click", () => rollbackQueueTask(task.task_id));
+    actions.append(rollbackButton);
+  }
+  
+  if (isPending || isRunning) {
+    const failPanel = document.createElement("section");
+    failPanel.className = "queueFailPanel";
+    const failLabel = document.createElement("strong");
+    const failInput = document.createElement("textarea");
+    const failButton = document.createElement("button");
+    failLabel.textContent = "Failure reason";
+    failInput.id = "queueFailReason";
+    failInput.rows = 3;
+    failInput.placeholder = "Required before failing this task.";
+    failButton.type = "button";
+    failButton.className = "dangerAction";
+    failButton.textContent = "Confirm Fail";
+    failButton.addEventListener("click", () => failQueueTask(task.task_id));
+    failPanel.append(failLabel, failInput, failButton);
+    actions.append(failPanel);
+  }
+  const actionStatus = document.createElement("p");
+  actionStatus.id = "queueActionStatus";
+  actionStatus.className = "queueActionStatus";
+  
+  const liveLog = document.createElement("pre");
+  liveLog.id = "liveTaskLog";
+  liveLog.className = "liveTaskLog";
+  liveLog.textContent = "Waiting for logs...";
+  
+  if (isRunning) {
+    logPollInterval = setInterval(() => pollTaskLog(task.task_id), 2000);
+  }
 
   const statusRow = document.createElement("div");
   statusRow.className = "queueMetaGrid";
@@ -350,9 +871,50 @@ function renderQueueDetails(task) {
   appendQueueField(resultBlock, "Files read", result.files_read);
   appendQueueField(resultBlock, "Commands run", result.commands_run);
   appendQueueField(resultBlock, "Files changed", result.files_changed);
+  if (result.pre_existing_dirty && result.pre_existing_dirty.length > 0) {
+    appendQueueField(resultBlock, "Pre-existing dirty files", result.pre_existing_dirty);
+  }
   appendQueueField(resultBlock, "Diff", result.diff, "queueDiff");
+  if (result.verification) {
+    appendQueueField(resultBlock, "Verification Step", result.verification, "queueVerification");
+  }
   appendQueueField(resultBlock, "Errors", task.error || result.errors);
   appendQueueField(resultBlock, "Unverified", result.unverified);
+  if (isRunning) {
+    const resultEditor = document.createElement("section");
+    resultEditor.className = "queueResultEditor";
+    const editorLabel = document.createElement("strong");
+    const editor = document.createElement("textarea");
+    const resultTools = document.createElement("div");
+    const resetButton = document.createElement("button");
+    const resultStatus = document.createElement("p");
+    editor.id = "queueResultInput";
+    editor.rows = 10;
+    editor.spellcheck = false;
+    editorLabel.textContent = "Result JSON";
+    const hasResult = Object.values(result).some(value => Array.isArray(value) ? value.length : Boolean(value));
+    editor.value = JSON.stringify(hasResult ? result : resultTemplate, null, 2);
+    editor.addEventListener("input", () => {
+      try {
+        const validation = validateQueueResult(queueResultFromTextarea());
+        queueResultStatus(validation || "Result JSON is valid.", Boolean(validation));
+      } catch (error) {
+        queueResultStatus(error.message, true);
+      }
+    });
+    resultTools.className = "queueResultTools";
+    resetButton.type = "button";
+    resetButton.textContent = "Reset Result Template";
+    resetButton.addEventListener("click", () => {
+      editor.value = JSON.stringify(resultTemplate, null, 2);
+      queueResultStatus("Result template reset.");
+    });
+    resultStatus.id = "queueResultStatus";
+    resultStatus.className = "queueResultStatus";
+    resultTools.append(resetButton, resultStatus);
+    resultEditor.append(editorLabel, editor, resultTools);
+    resultBlock.append(resultEditor);
+  }
 
   const historyBlock = document.createElement("section");
   historyBlock.className = "queueSection";
@@ -378,7 +940,7 @@ function renderQueueDetails(task) {
     });
   }
 
-  wrap.append(head, statusRow, packetBlock, resultBlock, historyBlock);
+  wrap.append(head, actions, actionStatus, liveLog, statusRow, packetBlock, resultBlock, historyBlock);
   queueDetail.replaceChildren(wrap);
 }
 
@@ -534,6 +1096,41 @@ function renderSignals(items, tasks) {
   signalCount.textContent = `${merged.length} live`;
 }
 
+function renderConnectorStatus(connector = {}) {
+  if (!connectorBadge) return;
+  const ready = Boolean(connector.ready);
+  const running = Boolean(connector.running);
+  const hasError = Boolean(connector.last_error);
+  connectorBadge.textContent = ready ? "Ready" : hasError ? "Needs attention" : running ? "Starting" : connector.status || "Offline";
+  connectorBadge.className = ready ? "isReady" : hasError ? "isError" : running ? "isStarting" : "isOffline";
+  connectorMcp.textContent = connector.connector_running ? "Online" : "Offline";
+  connectorTunnel.textContent = connector.tunnel_running ? "Online" : "Offline";
+  connectorPublic.textContent = connector.public_health_ok ? "Healthy" : connector.public_url ? "Checking" : "Waiting";
+  const url = connector.mcp_url || "";
+  currentConnectorUrl = url;
+  connectorUrl.textContent = url || connector.last_error || "Waiting for tunnel URL...";
+  connectorUrl.classList.toggle("isError", hasError);
+  if (copyConnectorUrl) {
+    copyConnectorUrl.disabled = !url;
+    copyConnectorUrl.textContent = url ? "Copy URL" : "Waiting";
+  }
+}
+
+function renderRunnerStatus(runner = {}) {
+  if (!runnerBadge) return;
+  const ready = Boolean(runner.ready);
+  currentAutoRunEnabled = Boolean(runner.auto_run_chatgpt_tasks);
+  runnerBadge.textContent = ready ? "Ready" : "Needs boot";
+  runnerBadge.className = ready ? "isReady" : "isStarting";
+  runnerServer.textContent = runner.server_running || runner.api_ok ? "Online" : "Offline";
+  runnerModel.textContent = runner.model_loaded ? "Loaded" : runner.model_key || "Not loaded";
+  runnerOpenCode.textContent = runner.opencode_found ? "Found" : "Missing";
+  if (toggleAutoRun) {
+    toggleAutoRun.textContent = currentAutoRunEnabled ? "Auto-run: On" : "Auto-run: Off";
+    toggleAutoRun.classList.toggle("isEnabled", currentAutoRunEnabled);
+  }
+}
+
 function setView(view) {
   app.classList.toggle("view-command", view === "command");
   app.classList.toggle("view-team", view === "team");
@@ -570,6 +1167,8 @@ async function refresh() {
     renderBoard(data.tasks || []);
     renderActivity(data.activity || []);
     renderSignals(data.activity || [], data.tasks || []);
+    renderConnectorStatus(data.chatgpt_connector || {});
+    renderRunnerStatus(data.opencode_runner || {});
   } catch (error) {
     readyChip.textContent = "Bridge lost";
     railReady.textContent = "Bridge lost";
@@ -713,6 +1312,65 @@ if (queueRefresh) {
   queueRefresh.addEventListener("click", () => loadQueueTasks());
 }
 
+if (copyConnectorUrl) {
+  copyConnectorUrl.addEventListener("click", async () => {
+    if (!currentConnectorUrl) return;
+    try {
+      await navigator.clipboard.writeText(currentConnectorUrl);
+      copyConnectorUrl.textContent = "Copied";
+    } catch (_error) {
+      copyConnectorUrl.textContent = "Select URL";
+    }
+    setTimeout(() => {
+      copyConnectorUrl.textContent = currentConnectorUrl ? "Copy URL" : "Waiting";
+    }, 1400);
+  });
+}
+
+if (bootRunner) {
+  bootRunner.addEventListener("click", async () => {
+    bootRunner.disabled = true;
+    bootRunner.textContent = "Booting...";
+    try {
+      const res = await fetch("/opencode/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || data.message || "Could not boot runner");
+      renderRunnerStatus(data.opencode_runner || {});
+      bootRunner.textContent = "Booted";
+      await refresh();
+    } catch (error) {
+      bootRunner.textContent = "Boot failed";
+      addMessage({ id: "runner-" + Date.now(), kind: "error", text: "OpenCode runner boot failed: " + error.message });
+    } finally {
+      setTimeout(() => {
+        bootRunner.disabled = false;
+        bootRunner.textContent = "Boot Runner";
+      }, 1400);
+    }
+  });
+}
+
+if (toggleAutoRun) {
+  toggleAutoRun.addEventListener("click", async () => {
+    toggleAutoRun.disabled = true;
+    try {
+      const res = await fetch("/opencode/auto-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !currentAutoRunEnabled })
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || data.message || "Could not update auto-run");
+      renderRunnerStatus(data.opencode_runner || {});
+      await refresh();
+    } catch (error) {
+      addMessage({ id: "autorun-" + Date.now(), kind: "error", text: "Auto-run toggle failed: " + error.message });
+    } finally {
+      toggleAutoRun.disabled = false;
+    }
+  });
+}
+
 if (queueCreateForm) {
   queueCreateForm.addEventListener("submit", async event => {
     event.preventDefault();
@@ -763,14 +1421,31 @@ copyStatus.addEventListener("click", async () => {
 });
 
 input.addEventListener("keydown", event => {
-  if (event.key === "Enter" && event.ctrlKey) {
+  if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     form.requestSubmit();
   }
 });
 
 document.addEventListener("keydown", event => {
-  if (event.target === input || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key === "Escape") {
+    if (selectedTaskId || selectedAgentId) {
+      selectedTaskId = null;
+      selectedAgentId = null;
+      renderDetails(null);
+      renderAgents(window.lastAgentsData || []);
+      renderBoard(window.lastBoardData || []);
+    }
+    if (selectedQueueTaskId) {
+      selectedQueueTaskId = null;
+      renderQueueDashboard(queueTasks);
+    }
+    input.blur();
+    return;
+  }
+  
+  if (event.target === input || event.target === queuePacketInput || event.target.tagName === "TEXTAREA" || event.altKey || event.ctrlKey || event.metaKey) return;
+  
   if (event.key === "1") setView("command");
   if (event.key === "2") setView("team");
   if (event.key === "3") setView("board");
@@ -824,3 +1499,4 @@ refresh();
 setInterval(refresh, 1500);
 window.addEventListener("resize", resizeStars);
 input.focus();
+;

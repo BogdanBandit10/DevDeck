@@ -1,14 +1,28 @@
-# Brawn Workflow
+# Brain/Hands Workflow
 
 ## Roles
 
-- ChatGPT: brain, planner, reviewer, and task packet writer.
-- OpenCode + LM Studio: brawn executor for scoped repo tasks.
-- User: relays task packets to OpenCode and returns results, diffs, errors, or questions to ChatGPT.
+- **Brain (ChatGPT):** Planner, reviewer, and task packet writer. Determines context using GitHub, exact paths, or snippets before tasking.
+- **Hands (OpenCode + LM Studio):** Surgical local executor for narrow, spoon-fed repo tasks.
+- **User:** Relays task packets and returns structured results to the Brain.
 
-OpenCode should execute narrow instructions. It should not decide architecture, expand task scope, or perform broad cleanup without a new task packet.
+OpenCode must execute narrow, explicit instructions. It should never broadly understand, refactor, or explore the codebase.
+
+## Core Mandates
+
+1. **Context First:** ChatGPT must determine if it has enough context before creating a task. Prefer external context over local exploration.
+2. **Surgical Scope:** Tasks must be tiny and spoon-fed. Never ask OpenCode to "think." Ask it only to: **inspect**, **patch**, **execute**, or **report**.
+3. **Brain Decides:** ChatGPT decides files, changes, and verification. ChatGPT performs all reasoning and strategy.
+4. **Hands Executes:** OpenCode only inspects, edits, runs, and reports.
+5. **Small Model Safeguards:** Assume 32k context and 9B reasoning. Limit files/lines.
+6. **Result-Review Loop:** ChatGPT reviews every result before the next step.
+7. **Efficient Retry Strategy:** If a task fails, do NOT resend the full context. Send only the **error**, the **minimal surrounding code**, and the **exact failure point** to preserve the context budget.
+8. **Git Tracking:** Every task must track `git status` before and after. `files_changed` should only list files newly modified by the task.
+9. **Verification Loop:** Every packet must include a verification action. The Bridge will report this in a `verification` field.
 
 ## Standard Task Packet
+
+Every OpenCode packet must include these fields:
 
 ```text
 TASK
@@ -24,10 +38,9 @@ ACTIONS
 
 RESTRICTIONS
 - Do not modify source unless explicitly allowed.
-- Do not touch Dev Deck.exe unless explicitly allowed.
-- Do not repeatedly run the same command.
-- Prefer exact file reads over broad recursive scans.
-- Stop and report if the task becomes ambiguous.
+- No broad recursive scans.
+- Run commands once.
+- Assume 32k context / 9B reasoning.
 
 OUTPUT FORMAT
 - Files read:
@@ -35,6 +48,11 @@ OUTPUT FORMAT
 - Files changed:
 - Diff or summary:
 - Errors/unverified:
+
+STOP CONDITIONS
+- Stop if the file is missing.
+- Stop if the task is ambiguous.
+- Stop if a command fails twice.
 ```
 
 ## Loop Prevention Rules

@@ -11,5 +11,7 @@ Important files:
 - `hermes_bridge/hermes_bridge.py` - local bridge server.
 - `hermes_bridge/assistant_protocol.py` - agent roster, roles, and task protocol.
 - `hermes_bridge/assets/` - big-window UI assets.
+- `connector/dev-deck-mcp-server.mjs` - ChatGPT-facing MCP facade for queue tools.
+- `docs/CHATGPT_CONNECTOR_SETUP.md` - local connector and ngrok setup.
 
 Runtime logs are written under `hermes_bridge/logs/` when the launcher runs.

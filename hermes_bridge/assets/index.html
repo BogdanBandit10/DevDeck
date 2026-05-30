@@ -46,7 +46,7 @@
         <div>
           <p class="eyebrow">Coding team cockpit</p>
           <h1 id="modeTitle">Shared channel</h1>
-          <p id="modeSummary">Coordinate your widget, Codex/Hermes backend, and crew sub-agents from one live desk.</p>
+          <p id="modeSummary">Coordinate your widget, Codex backend, and crew sub-agents from one live desk.</p>
         </div>
         <div class="statusStrip">
           <span class="chip" id="readyChip">Connecting</span>
@@ -68,10 +68,6 @@
             <p class="modeBadge">Operator: Frank</p>
             <h2>Team cockpit online</h2>
             <p>Your small widget can keep the quick conversation going while this window tracks the bigger operation: agents, task state, backend, and recent decisions.</p>
-            <div class="signalPanel" aria-label="Crew signals">
-              <div class="signalTop"><strong>Crew signals</strong><span id="signalCount">0 live</span></div>
-              <div id="crewSignals" class="crewSignals"></div>
-            </div>
             <div class="actionRow">
               <button type="button" data-prompt="/task implement ">Dispatch task</button>
               <button type="button" data-prompt="/ideas research similar agent UI features for this project">Ask for ideas</button>
@@ -88,13 +84,56 @@
           <div class="metric"><span>Events</span><strong id="metricEvents">0</strong></div>
         </section>
 
+        <section class="opsDock" data-pane="command" aria-label="Connector and runner status">
+          <div class="signalPanel" aria-label="Crew signals">
+            <div class="signalTop"><strong>Crew signals</strong><span id="signalCount">0 live</span></div>
+            <div id="crewSignals" class="crewSignals"></div>
+          </div>
+          <div class="connectorPanel" aria-label="ChatGPT connector status">
+            <div class="connectorTop">
+              <strong>ChatGPT connector</strong>
+              <span id="connectorBadge">Starting</span>
+            </div>
+            <div class="connectorGrid">
+              <div><strong>MCP</strong><span id="connectorMcp">Checking</span></div>
+              <div><strong>Tunnel</strong><span id="connectorTunnel">Checking</span></div>
+              <div><strong>Public</strong><span id="connectorPublic">Checking</span></div>
+            </div>
+            <div class="connectorUrlRow">
+              <div class="connectorUrl" id="connectorUrl">Waiting for tunnel URL...</div>
+              <button type="button" id="copyConnectorUrl">Copy URL</button>
+            </div>
+          </div>
+          <div class="runnerPanel" aria-label="OpenCode runner status">
+            <div class="connectorTop">
+              <strong>OpenCode runner</strong>
+              <span id="runnerBadge">Checking</span>
+            </div>
+            <div class="connectorGrid">
+              <div><strong>LM server</strong><span id="runnerServer">Checking</span></div>
+              <div><strong>Model</strong><span id="runnerModel">Checking</span></div>
+              <div><strong>OpenCode</strong><span id="runnerOpenCode">Checking</span></div>
+            </div>
+            <div class="runnerActions">
+              <button type="button" id="bootRunner">Boot Runner</button>
+              <button type="button" id="toggleAutoRun">Auto-run: Checking</button>
+            </div>
+          </div>
+        </section>
+
         <section class="teamPanel" data-pane="team">
           <div class="panelTop"><strong>Crew roster</strong><span class="chip" id="agentCount">0 agents</span></div>
           <div class="agentGrid" id="agentGrid"></div>
         </section>
 
         <section class="boardPanel" data-pane="board">
-          <div class="panelTop"><strong>Kanban board</strong><span id="taskCount" class="chip">0 tasks</span></div>
+          <div class="panelTop">
+            <strong>Kanban board</strong>
+            <div class="panelActions">
+              <span id="taskCount" class="chip">0 tasks</span>
+              <button type="button" id="boardClearDone">Clear Done</button>
+            </div>
+          </div>
           <div class="lanes" id="lanes"></div>
         </section>
 
@@ -103,6 +142,7 @@
             <strong>Task queue</strong>
             <div class="panelActions">
               <span id="queueCount" class="chip">0 tasks</span>
+              <button type="button" id="queueClearDone">Clear Done</button>
               <button type="button" id="queueRefresh">Refresh</button>
             </div>
           </div>

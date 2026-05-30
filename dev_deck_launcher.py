@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -71,10 +72,12 @@ def bridge_ready(timeout: float = 0.7) -> bool:
 
 
 def find_pythonw() -> str:
-    hermes_pythonw = Path(r"C:\Users\frank\AppData\Local\hermes\hermes-agent\venv\Scripts\pythonw.exe")
+    local_appdata = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    hermes_root = local_appdata / "hermes" / "hermes-agent" / "venv" / "Scripts"
+    hermes_pythonw = hermes_root / "pythonw.exe"
     if hermes_pythonw.exists():
         return str(hermes_pythonw)
-    hermes_python = Path(r"C:\Users\frank\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe")
+    hermes_python = hermes_root / "python.exe"
     if hermes_python.exists():
         return str(hermes_python)
     return "pythonw.exe"
@@ -155,9 +158,24 @@ def show_error(message: str) -> None:
         pass
 
 
+def cleanup_state() -> None:
+    log("Cleaning up old state and logs")
+    # Clean turn logs
+    if LOG_DIR.exists():
+        for item in LOG_DIR.glob("*"):
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink(missing_ok=True)
+    # Clean connector state
+    if (BRIDGE_DIR / "connector_state.json").exists():
+        (BRIDGE_DIR / "connector_state.json").unlink()
+
+
 def main() -> int:
     log("Launcher requested")
     try:
+        cleanup_state()
         if not bridge_ready(timeout=0.25):
             start_bridge()
             if not wait_for_bridge():
